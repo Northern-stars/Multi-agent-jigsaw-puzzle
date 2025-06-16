@@ -10,15 +10,21 @@ from outsider_pretrain import fen_model
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
 CLIP_GRAD_NORM=0.5
-TRAIN_PER_STEP=10
-ACTOR_LR=[1e-6,1e-6,1e-7,1e-7]
-CRITIC_LR=[1e-3,1e-4,1e-5,1e-6]
+TRAIN_PER_STEP=20
+ACTOR_LR=1e-5
+CRITIC_LR=1e-3
+ACTOR_SCHEDULAR_STEP=200
+CRITIC_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
 CONSISTENCY_REWARD=0.5
 PANELTY=-1
-ENTROPY_WEIGHT=0.01
+ENTROPY_WEIGHT=0.1
+ENTROPY_GAMMA=0.998
+ENTROPY_MIN=0.005
+EPOCH_NUM=500
+LOAD_MODEL=True
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -41,7 +47,7 @@ class actor_model(nn.Module):
         self.outsider_fen_model=fen_model(512,128)
         self.fc1=nn.Linear(640,160)
         self.relu=nn.ReLU()
-        self.dropout=nn.Dropout(p=0.3)
+        self.dropout=nn.Dropout(p=0.1)
         self.fc2=nn.Linear(160,action_num)
     
     def forward(self,image,outsider_piece):
@@ -96,8 +102,10 @@ class env:
         self.memory_counter=0
         self.actor_model_list=[copy.deepcopy(actor_model) for i in range(image_num)]
         self.critic_model=critic_model
-        self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[i].parameters(),lr=1e-4) for i in range(image_num)]
-        self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=1e-4)
+        self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[i].parameters(),lr=ACTOR_LR) for i in range(image_num)]
+        self.actor_schedular_list=[torch.optim.lr_scheduler.StepLR(self.actor_optimizer_list[j], step_size=ACTOR_SCHEDULAR_STEP, gamma=0.1) for j in range(image_num)]
+        self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR)
+        self.critic_schedular=torch.optim.lr_scheduler.StepLR(optimizer=self.critic_optimizer,gamma=0.1,step_size=CRITIC_SCHEDULAR_STEP)
         self.device=device
         self.batch_size=batch_size
         self.gamma=gamma
@@ -195,6 +203,7 @@ class env:
     
 
     def critic_update(self,state_value,returns_list):
+        self.critic_model.train()
         state_value=torch.cat(state_value,dim=0)
         returns=torch.cat(returns_list,dim=0)
         critic_loss=nn.functional.mse_loss(state_value.squeeze(),returns)
@@ -205,6 +214,7 @@ class env:
         
 
     def actor_update(self,actor_index,log_prob_list,state_value,returns,entropy):
+        self.actor_model_list[actor_index].train()
         adavantage=returns-state_value.detach()
         log_prob=torch.cat(log_prob_list)
         actor_loss=-(log_prob*adavantage).mean()-ENTROPY_WEIGHT*entropy
@@ -227,6 +237,9 @@ class env:
 
 
     def step(self,epoch=500,load=True):#Change after determined
+        global ENTROPY_WEIGHT
+        global ENTROPY_GAMMA
+        global ENTROPY_MIN
         if load:
             self.critic_model.load_state_dict(torch.load("Critic"+MODEL_NAME))
             for j in range(self.image_num):
@@ -234,19 +247,11 @@ class env:
         for i in range(epoch):
             if i>300:
                 max_step=100
-                self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[j].parameters(),lr=ACTOR_LR[3]) for j in range(self.image_num)]
-                self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR[3])
             elif i>200:
                 max_step=200
-                self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[j].parameters(),lr=ACTOR_LR[2]) for j in range(self.image_num)]
-                self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR[2])
             elif i>100:
                 max_step=300
-                self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[j].parameters(),lr=ACTOR_LR[1]) for j in range(self.image_num)]
-                self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR[1])
             else:
-                self.actor_optimizer_list=[torch.optim.Adam(self.actor_model_list[j].parameters(),lr=ACTOR_LR[0]) for j in range(self.image_num)]
-                self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR[0])
                 max_step=400
             self.load_image(self.image_num)
             reward_sum_list=[[] for j in range(self.image_num)]
@@ -331,13 +336,17 @@ class env:
                     entropy=[0 for i in range(self.image_num)]
                     train_reward=[[] for j in range(self.image_num)]
                     critic_output_list=[[] for j in range(self.image_num)]
+                    if ENTROPY_WEIGHT>=ENTROPY_MIN:
+                        ENTROPY_WEIGHT=ENTROPY_WEIGHT*ENTROPY_GAMMA
                 step=step+1
             print(f"Epoch: {i}. Done: {done}, step: {step},reward: {[sum(reward_sum_list[j])/step for j in range(self.image_num)]}, critic_loss: {critic_loss_sum}")
             
             print(f"Action_list: {self.action_list}")
             torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
+            self.critic_schedular.step()
             for j in range(self.image_num):
                 torch.save(self.actor_model_list[j].state_dict(),"Actor_"+str(j)+MODEL_NAME)
+                self.actor_schedular_list[j].step()
 
 
 
@@ -346,7 +355,7 @@ class env:
 
 if __name__ == "__main__":
     MODEL_NAME="(1).pth"
-    critic=critic_model(hidden_size1=1024,hidden_size2=256).to(device=DEVICE)
+    critic=critic_model(hidden_size1=512,hidden_size2=256).to(device=DEVICE)
     actor=actor_model(45).to(DEVICE)
 
     environment=env(train_x=train_x,
@@ -359,5 +368,5 @@ if __name__ == "__main__":
                     critic_model=critic,
                     image_num=2,
                     buffer_size=1)
-    environment.step(epoch=500,load=False)
+    environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
     
