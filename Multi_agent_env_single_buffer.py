@@ -9,11 +9,16 @@ from outsider_pretrain import fen_model
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
-CLIP_GRAD_NORM=1
-TRAIN_PER_STEP=20
+CLIP_GRAD_NORM=0.5
+TRAIN_PER_STEP=10
 ACTOR_LR=[1e-6,1e-6,1e-7,1e-7]
-CRITIC_LR=[5e-3,1e-3,1e-4,1e-4]
+CRITIC_LR=[1e-3,1e-4,1e-5,1e-6]
 BASIC_BIAS=1e-8
+PAIR_WISE_REWARD=.2
+CATE_REWARD=.8
+CONSISTENCY_REWARD=0.5
+PANELTY=-1
+ENTROPY_WEIGHT=0.01
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -56,7 +61,7 @@ class critic_model(nn.Module):
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
         self.fc1=nn.Linear(hidden_size1,hidden_size2)
         self.relu=nn.ReLU()
-        self.dropout=nn.Dropout(p=0.3)
+        self.dropout=nn.Dropout(p=0.1)
         self.fc=nn.Linear(hidden_size2,1)
     
     def forward(self,image):
@@ -149,7 +154,7 @@ class env:
         permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
         
         done_list=[0 for i in range(len(permutation_list))]
-        reward_list=[0 for i in range(len(permutation_list))]
+        reward_list=[PANELTY for i in range(len(permutation_list))]
         edge_length=int(len(permutation_list[0])**0.5)
         piece_num=len(permutation_list[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
@@ -160,26 +165,26 @@ class env:
                 hori_pair_set=(permutation_list[i][hori_set[j][0]],permutation_list[i][hori_set[j][1]])
                 vert_pair_set=(permutation_list[i][vert_set[j][0]],permutation_list[i][vert_set[j][1]])
                 if -1 not in hori_pair_set and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set:
-                    reward_list[i]+=1
+                    reward_list[i]+=1*PAIR_WISE_REWARD
                 if -1 not in vert_pair_set and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set:
-                    reward_list[i]+=1
+                    reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
         
             for j in range(piece_num):
                 if permutation_list[i][j]!=-1:
                     piece_range[permutation_list[i][j]//piece_num]+=1
-                reward_list[i]+=(permutation_list[i][j]%piece_num==j)#Category reward
+                reward_list[i]+=(permutation_list[i][j]%piece_num==j)*CATE_REWARD#Category reward
             
             max_piece=max(piece_range)#Consistancy reward
             if max_piece==piece_num-3:
-                reward_list[i]+=1
+                reward_list[i]+=1*CONSISTENCY_REWARD
             elif max_piece==piece_num-2:
-                reward_list[i]+=2
+                reward_list[i]+=2*CONSISTENCY_REWARD
             elif max_piece==piece_num-1:
-                reward_list[i]+=3
+                reward_list[i]+=3*CONSISTENCY_REWARD
             elif max_piece==piece_num:
-                reward_list[i]+=5
+                reward_list[i]+=5*CONSISTENCY_REWARD
             
             start_index=min(permutation_list[i])//piece_num*piece_num#Done reward
             if permutation_list[i]==range(start_index,start_index+piece_num):
@@ -199,10 +204,10 @@ class env:
         return critic_loss.item()
         
 
-    def actor_update(self,actor_index,log_prob_list,state_value,returns):
+    def actor_update(self,actor_index,log_prob_list,state_value,returns,entropy):
         adavantage=returns-state_value.detach()
         log_prob=torch.cat(log_prob_list)
-        actor_loss=-(log_prob*adavantage).mean()
+        actor_loss=-(log_prob*adavantage).mean()-ENTROPY_WEIGHT*entropy
         self.actor_optimizer_list[actor_index].zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor_model_list[actor_index].parameters(), CLIP_GRAD_NORM)
@@ -256,6 +261,7 @@ class env:
 
             buffer=[-1 for i in range(self.buffer_size)]
             log_prob_list=[[] for j in range(self.image_num)]
+            entropy=[0 for i in range(self.image_num)]
             train_reward=[[] for j in range(self.image_num)]
             critic_output_list=[[] for j in range(self.image_num)]
             self.action_list=[[0 for j in range(45)] for i in range(self.image_num)]
@@ -275,6 +281,7 @@ class env:
                         new_permutation=self.permute(permutation,action.item())
                         self.action_list[j][action.item()]+=1
                         log_prob_list[j].append(action_dist.log_prob(action))
+                        entropy[j]+=action_dist.entropy().mean()
                         new_image,_=self.get_image(new_permutation)
                         image_list.append(new_image)
                         do_list.append(j)
@@ -294,10 +301,11 @@ class env:
                 done=True
                 for j in do_list:
                     reward_sum_list[j].append(reward_list[j])
-                    if train_reward[j]:
-                        train_reward[j].append(reward_list[j]-reward_sum_list[j][-2])
-                    else:
-                        train_reward[j].append(reward_list[j])
+                    # if train_reward[j]:
+                    #     train_reward[j].append(reward_list[j]-reward_sum_list[j][-2])
+                    # else:
+                    #     train_reward[j].append(reward_list[j])
+                    train_reward[j].append(reward_list[j])
                 for j in do_list:
                     if not done_list[j]:
                         done=False
@@ -314,16 +322,18 @@ class env:
                     
                             return_list[j]=torch.tensor(return_list[j]).float().to(self.device).unsqueeze(0)
                             return_list[j]=(return_list[j]-return_list[j].mean())/(return_list[j].std()+BASIC_BIAS)
-                    print(return_list)
+                    # print(return_list)
                     critic_loss_sum+=self.critic_update(state_value=critic_output_list,returns_list=return_list)
                     for j in range(self.image_num):
                         if log_prob_list[j]:
-                            self.actor_update(actor_index=j,log_prob_list=log_prob_list[j],state_value=critic_output_list[j],returns=return_list[j])
+                            self.actor_update(actor_index=j,log_prob_list=log_prob_list[j],state_value=critic_output_list[j],returns=return_list[j],entropy=entropy[j])
                     log_prob_list=[[] for j in range(self.image_num)]
+                    entropy=[0 for i in range(self.image_num)]
                     train_reward=[[] for j in range(self.image_num)]
                     critic_output_list=[[] for j in range(self.image_num)]
                 step=step+1
-            print(f"Epoch: {i}. Success: {done}, step: {step},reward: {[sum(reward_sum_list[j])/step for j in range(self.image_num)]}, critic_loss: {critic_loss_sum}")
+            print(f"Epoch: {i}. Done: {done}, step: {step},reward: {[sum(reward_sum_list[j])/step for j in range(self.image_num)]}, critic_loss: {critic_loss_sum}")
+            
             print(f"Action_list: {self.action_list}")
             torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
             for j in range(self.image_num):
@@ -349,5 +359,5 @@ if __name__ == "__main__":
                     critic_model=critic,
                     image_num=2,
                     buffer_size=1)
-    environment.step(epoch=500)
+    environment.step(epoch=500,load=False)
     
