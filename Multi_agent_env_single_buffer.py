@@ -11,8 +11,8 @@ DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
 CLIP_GRAD_NORM=1
 TRAIN_PER_STEP=20
-ACTOR_LR=[1e-5,1e-5,1e-6,1e-6]
-CRITIC_LR=[1e-3,1e-4,1e-4,1e-4]
+ACTOR_LR=[1e-6,1e-6,1e-7,1e-7]
+CRITIC_LR=[5e-3,1e-3,1e-4,1e-4]
 BASIC_BIAS=1e-8
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
@@ -244,7 +244,7 @@ class env:
                 self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR[0])
                 max_step=400
             self.load_image(self.image_num)
-            reward_sum_list=[0 for j in range(self.image_num)]
+            reward_sum_list=[[] for j in range(self.image_num)]
             done_list=[False for j in range(self.image_num)]
             done=False
             step=0
@@ -293,13 +293,16 @@ class env:
                 reward_list,done_list=self.get_reward(permutation_list)
                 done=True
                 for j in do_list:
-                    
-                    reward_sum_list=[reward_sum_list[j]+reward_list[j] for j in range(self.image_num)]
-                    train_reward=[train_reward[j]+[reward_list[j]] for j in range(self.image_num)]
+                    reward_sum_list[j].append(reward_list[j])
+                    if train_reward[j]:
+                        train_reward[j].append(reward_list[j]-reward_sum_list[j][-2])
+                    else:
+                        train_reward[j].append(reward_list[j])
+                for j in do_list:
                     if not done_list[j]:
                         done=False
                         break
-                    
+                
                 if (step+1)%TRAIN_PER_STEP==0:
                     return_list=[[] for j in range(self.image_num)]
                     for j in range(self.image_num):
@@ -308,9 +311,10 @@ class env:
                             for r in train_reward[j][::-1]:
                                 R=r+self.gamma*R
                                 return_list[j].insert(0,R)
+                    
                             return_list[j]=torch.tensor(return_list[j]).float().to(self.device).unsqueeze(0)
                             return_list[j]=(return_list[j]-return_list[j].mean())/(return_list[j].std()+BASIC_BIAS)
-
+                    print(return_list)
                     critic_loss_sum+=self.critic_update(state_value=critic_output_list,returns_list=return_list)
                     for j in range(self.image_num):
                         if log_prob_list[j]:
@@ -319,7 +323,7 @@ class env:
                     train_reward=[[] for j in range(self.image_num)]
                     critic_output_list=[[] for j in range(self.image_num)]
                 step=step+1
-            print(f"Epoch: {i}. Success: {done}, step: {step},reward: {[reward_sum_list[j]/step for j in range(self.image_num)]}, critic_loss: {critic_loss_sum}")
+            print(f"Epoch: {i}. Success: {done}, step: {step},reward: {[sum(reward_sum_list[j])/step for j in range(self.image_num)]}, critic_loss: {critic_loss_sum}")
             print(f"Action_list: {self.action_list}")
             torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
             for j in range(self.image_num):
@@ -345,5 +349,5 @@ if __name__ == "__main__":
                     critic_model=critic,
                     image_num=2,
                     buffer_size=1)
-    environment.step(epoch=500,load=False)
+    environment.step(epoch=500)
     
