@@ -5,16 +5,19 @@ import random
 import copy
 import itertools
 from outsider_pretrain import fen_model
+from torchvision.models import efficientnet_b0
 
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
 CLIP_GRAD_NORM=0.5
-TRAIN_PER_STEP=20
-ACTOR_LR=1e-5
+TRAIN_PER_STEP=8
+ACTOR_LR=1e-4
 CRITIC_LR=1e-3
-ACTOR_SCHEDULAR_STEP=200
+ENCODER_LR=1e-4
+ACTOR_SCHEDULAR_STEP=100
 CRITIC_SCHEDULAR_STEP=100
+ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
@@ -25,6 +28,8 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 EPOCH_NUM=500
 LOAD_MODEL=True
+SWAP_NUM=[4,1,2,4]
+MAX_STEP=[200,100,100,100]
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -39,16 +44,53 @@ train_x=np.load(train_x_path)
 train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
 
+class fen_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2):
+        super(fen_model,self).__init__()
+        self.ef=efficientnet_b0(weights="DEFAULT")
+        self.ef.classifier=nn.Linear(1280,128)
+        self.fc1=nn.Linear(128*12,hidden_size1)
+        self.relu=nn.ReLU()
+        self.bn=nn.BatchNorm1d(hidden_size1)
+        self.do=nn.Dropout1d(p=0.1)
+        self.fc2=nn.Linear(hidden_size1,hidden_size2)
+    
+    def forward(self,image):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
+        hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
+        vert_set=[(i,i+3) for i in range(3*2)]
+        hori_tensor=torch.cat([self.ef(image_fragments[hori_set[i][0]])-self.ef(image_fragments[hori_set[i][0]]) for i in range(len(hori_set))],dim=-1)
+        vert_tensor=torch.cat([self.ef(image_fragments[vert_set[i][0]])-self.ef(image_fragments[vert_set[i][0]]) for i in range(len(vert_set))],dim=-1)
+        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
+        x=self.do(feature_tensor)
+        x=self.fc1(x)
+        x=self.do(x)
+        x=self.bn(x)
+        x=self.relu(x)
+        x=self.fc2(x)
+        return x
+
 
 class actor_model(nn.Module):
     def __init__(self,action_num):
         super(actor_model,self).__init__()
-        self.image_fen_model=fen_model(512,512)
-        self.outsider_fen_model=fen_model(512,128)
-        self.fc1=nn.Linear(640,160)
+        self.image_fen_model=fen_model(256,256)
+        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
+        self.outsider_fen_model.classifier=nn.Linear(1280,128)
+        self.fc1=nn.Linear(384,128)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
-        self.fc2=nn.Linear(160,action_num)
+        self.fc2=nn.Linear(128,action_num)
     
     def forward(self,image,outsider_piece):
         image_input=self.image_fen_model(image)
@@ -89,8 +131,10 @@ class env:
                  device,
                  actor_model,#input: image,outsider_piece. Output: action index
                  critic_model,#input: image,outsider_piece. Output: Q value
+                #  encoder,
                  image_num,
-                 buffer_size
+                 buffer_size,
+                 piece_num=9
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -112,11 +156,18 @@ class env:
         self.image_num=image_num
         self.buffer_size=buffer_size
         self.action_list=[[0 for j in range(45)] for i in range(image_num)]
+        self.piece_num=piece_num
+        # self.encoder=encoder
+        # self.encoder_optimizer=torch.optim.Adam(self.encoder.parameters(),lr=ENCODER_LR)
+        # self.encoder_schedular=torch.optim.lr_scheduler.StepLR(optimizer=self.encoder_optimizer,gamma=0.1,step_size=ENCODER_SCHEDULAR_STEP)
 
         # print("Init")
     
-    def load_image(self,image_num):
-        image_index=random.choices(range(0,self.sample_number),k=image_num)
+    def load_image(self,image_num,id=[]):
+        if id:
+            image_index=id
+        else:
+            image_index=random.choices(range(0,self.sample_number),k=image_num)
         for i in range(len(image_index)):
             image_raw=self.image[image_index[i]]
             permutation_raw=self.label[image_index[i]]
@@ -208,20 +259,27 @@ class env:
         returns=torch.cat(returns_list,dim=0)
         critic_loss=nn.functional.mse_loss(state_value.squeeze(),returns)
         self.critic_optimizer.zero_grad()
+        # self.encoder_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
+        # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), CLIP_GRAD_NORM)
+        # self.encoder_optimizer.step()
         return critic_loss.item()
         
 
     def actor_update(self,actor_index,log_prob_list,state_value,returns,entropy):
         self.actor_model_list[actor_index].train()
+        # self.encoder.train()
         adavantage=returns-state_value.detach()
         log_prob=torch.cat(log_prob_list)
         actor_loss=-(log_prob*adavantage).mean()-ENTROPY_WEIGHT*entropy
         self.actor_optimizer_list[actor_index].zero_grad()
+        # self.encoder_optimizer.zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor_model_list[actor_index].parameters(), CLIP_GRAD_NORM)
+        # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), CLIP_GRAD_NORM)
         self.actor_optimizer_list[actor_index].step()
+        # self.encoder_optimizer.step()
 
 
     def permute(self,cur_permutation,action_index):
@@ -234,6 +292,16 @@ class env:
         return new_permutation
     
 
+    def summon_permutation_list(self,swap_num,id=[]):
+        if id:
+            self.load_image(image_num=self.image_num,id=id)
+        else:
+            self.load_image(image_num=self.image_num)
+        initial_permutation=list(range(self.piece_num*self.image_num))
+        for i in range(swap_num):
+            action_index=random.randint(0,len(initial_permutation)*(len(initial_permutation)-1)//2-1)
+            initial_permutation=self.permute(initial_permutation,action_index)
+        return initial_permutation
 
 
     def step(self,epoch=500,load=True):#Change after determined
@@ -246,23 +314,25 @@ class env:
                 self.actor_model_list[j].load_state_dict(torch.load("Actor_"+str(j)+MODEL_NAME))
         for i in range(epoch):
             if i>300:
-                max_step=100
+                max_step=MAX_STEP[3]
+                swap_num=SWAP_NUM[0]
             elif i>200:
-                max_step=200
+                max_step=MAX_STEP[2]
+                swap_num=SWAP_NUM[2]
             elif i>100:
-                max_step=300
+                max_step=MAX_STEP[1]
+                swap_num=SWAP_NUM[1]
             else:
-                max_step=400
-            self.load_image(self.image_num)
+                max_step=MAX_STEP[0]
+                swap_num=SWAP_NUM[0]
+            initial_permutation=self.summon_permutation_list(swap_num=swap_num)
             reward_sum_list=[[] for j in range(self.image_num)]
             done_list=[False for j in range(self.image_num)]
             done=False
             step=0
-            initial_permutation=list(range(0,9*self.image_num))
-            random.shuffle(initial_permutation)
             permutation_list=[]
             for j in range(self.image_num):
-                permutation_list.append(initial_permutation[j*9:(j+1)*9])
+                permutation_list.append(initial_permutation[j*self.piece_num:(j+1)*self.piece_num])
 
             buffer=[-1 for i in range(self.buffer_size)]
             log_prob_list=[[] for j in range(self.image_num)]
@@ -270,16 +340,18 @@ class env:
             train_reward=[[] for j in range(self.image_num)]
             critic_output_list=[[] for j in range(self.image_num)]
             self.action_list=[[0 for j in range(45)] for i in range(self.image_num)]
-
             critic_loss_sum=0
             while not done and step<max_step:
                 image_list=[]
                 do_list=[]
+                # actor_feature_tensor=[torch.zeros([3,288,288]) for i in range(self.image_num)]
                 for j in range(self.image_num):
+                    # self.encoder.eval()
                     if not done_list[j]:
                         self.actor_model_list[j].eval()
                         permutation=permutation_list[j]+buffer
                         image,outsider=self.get_image(permutation)
+                        # actor_feature_tensor[j]=self.encoder(image)
                         action_probs=self.actor_model_list[j](image,outsider)
                         action_dist=torch.distributions.Categorical(action_probs)
                         action=action_dist.sample()
@@ -295,6 +367,7 @@ class env:
                     
 
                 image_list=torch.cat(image_list)
+                # critic_feature_tensor=self.encoder(image_list)
                 critic_output=self.critic_model(image_list)
                 for j in range(critic_output.size(0)):
                     if critic_output_list[do_list[j]]!=[]:
@@ -344,6 +417,7 @@ class env:
             print(f"Action_list: {self.action_list}")
             torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
             self.critic_schedular.step()
+            # self.encoder_schedular.step()
             for j in range(self.image_num):
                 torch.save(self.actor_model_list[j].state_dict(),"Actor_"+str(j)+MODEL_NAME)
                 self.actor_schedular_list[j].step()
@@ -355,9 +429,9 @@ class env:
 
 if __name__ == "__main__":
     MODEL_NAME="(1).pth"
-    critic=critic_model(hidden_size1=512,hidden_size2=256).to(device=DEVICE)
+    critic=critic_model(hidden_size1=256,hidden_size2=128).to(device=DEVICE)
     actor=actor_model(45).to(DEVICE)
-
+    # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
                     memory_size=1e4,
@@ -366,6 +440,7 @@ if __name__ == "__main__":
                     device=DEVICE,
                     actor_model=actor,
                     critic_model=critic,
+                    # encoder=feature_encoder,
                     image_num=2,
                     buffer_size=1)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
