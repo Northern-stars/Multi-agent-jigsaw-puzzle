@@ -9,13 +9,14 @@ import math
 import copy
 import torch
 import itertools
+from colorama import init, Fore, Back, Style
 
 from torch import nn
 from pytorch_hori_pretrain import fen_model
+from torch.utils.tensorboard import SummaryWriter
 
-
-
-
+# color print
+init(autoreset=True)
 device="cuda" if torch.cuda.is_available() else "cpu"
 
 SAMPLE_ACTION_NUMBER=10
@@ -148,19 +149,6 @@ def get_cur_image(data_img_i1, data_img_i2, reassemble_list):
     index_list.insert(4, 7)
     index_list.insert(13, 10)
 
-    # label_mapping = {
-    #     0: 0, 1: 1, 2: 2,
-    #     9: 3, 10: 4, 11: 5,
-    #     3: 6, 4: 7, 5: 8,
-    #     12: 9, 13: 10, 14: 11,
-    #     6: 12, 7: 13, 8: 14,
-    #     15: 15, 16: 16, 17: 17
-    # }
-    #
-    # new_label = [0 for i in range(18)]
-    # for i in range(len(index_list)):
-    #     new_label[i] = label_mapping[index_list[i]]
-
     # img_0 = np.concatenate((combined_fragments[index_list[0]],
     #                         combined_fragments[index_list[1]],
     #                         combined_fragments[index_list[2]],
@@ -280,7 +268,7 @@ class Puzzle_Env(object):
         #         reward = cate * REWARD_CATE_RATE + (hori + vert) * REWARD_PAIRWISE_RATE
         #         return self.index_list, reward, True, cate, hori, vert
         cur_index_list = copy.deepcopy(self.index_list)
-        if a < 28:
+        if a < 120:
             all_possible_actions = list(itertools.combinations(range(16), 2))
             pos1, pos2 = all_possible_actions[a]
             cur_index_list[pos1], cur_index_list[pos2] = cur_index_list[pos2], cur_index_list[pos1]
@@ -495,7 +483,7 @@ class Agent:
         # total learning step
         self.learn_step_counter = 0
 
-        # initialize zero memory [s, a, r, s_]
+        # initialize zero memory [s, a, r, index1, s_]
         self.memory = np.zeros((self.memory_size, n_features * 2 + 3))
 
         self.cost = []
@@ -510,16 +498,13 @@ class Agent:
         # self.targetQN.summary()
 
 
-    def store_transition(self, s, a, r,episode, s_):
+    def store_transition(self, s, a, r, episode, s_):
         #Buffer?
         #s is current state, a represents action, r is reward and s_ is the next state
         if not hasattr(self, 'memory_counter'):  # hasattr:Check if the return object has named attributes
             self.memory_counter = 0
 
-
-        transition = np.hstack((s, [a, r,episode], s_)) 
-
-
+        transition = np.hstack((s, [a, r, episode], s_))
 
         # replace the old memory with new memory
         index = self.memory_counter % self.memory_size
@@ -640,12 +625,12 @@ class Agent:
             target_image_index=batch_memory[i,-self.n_features:]
             episode_index=int(batch_memory[i,self.n_features+2])
 
-            img1 = train_x[episode_index*2]
-            img2 = train_x[episode_index*2 + 1]
+            img1 = train_x[episode_index]
+            img2 = train_x[episode_index + 1]
 
             target_image_list=torch.cat([
                 target_image_list,
-                torch.tensor(get_cur_image(img1,img2, [int(x) for x in target_image_index])).unsqueeze(0)],axis=0)
+                torch.tensor(get_cur_image(img1, img2, [int(x) for x in target_image_index])).unsqueeze(0)],axis=0)
 
         target_image_list=target_image_list[1:,:,:,:]
         target_image_list=target_image_list.permute([0,3,1,2]).to(device)
@@ -662,22 +647,17 @@ class Agent:
         # reward=batch_memory[:,self.n_features+1]
         # print(q_next.size())
         # q_target[batch_index,0]=reward[batch_index][0]+self.gamma*q_next[batch_index][0]
-        
-        
-        
+
+
         reward=torch.tensor(batch_memory[:,self.n_features+1]).unsqueeze(1).to(device)
         # print(reward.size())
         q_target=reward+self.gamma*q_next
         q_target=q_target.to(torch.float)
         # print(q_target.type(),q_eval.type())
 
-        
-
-
         #back_propogation
         loss=loss_fn(q_target,q_eval)
 
-        
         optimizer.zero_grad()
         loss.float().backward()
         optimizer.step()
@@ -685,23 +665,17 @@ class Agent:
 
         self.learn_step_counter+=1
 
-        if self.learn_step_counter%100==0:
-            print("step:",self.learn_step_counter,"loss:",loss.item())
+        if self.learn_step_counter%50==0:
+            print(Fore.BLUE + f"step:{self.learn_step_counter},  loss:{loss.item()}")
 
     
 def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5):
     #This is the main train function
     step = 0
-
+    # writer = SummaryWriter('runs/puzzle_experiment')
     # np.random.seed(1)
-    modified_train_x = copy.deepcopy(train_x)
-    modified_train_y = copy.deepcopy(train_y)
 
-    if len(modified_train_x) % 2 != 0:
-        modified_train_x = modified_train_x[:-1]
-        modified_train_y = modified_train_y[:-1]
-
-    train_id_list = np.arange(len(modified_train_y))
+    train_id_list = np.arange(len(train_y)-1)
     # print("y shape:",train_y.shape)
     # print(len(hori_list))
 
@@ -731,14 +705,15 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
             optimizer=torch.optim.Adam(main_DQN.parameters(),lr=start_phase_lr,eps=1e-8)
             print(i)
 
-        pair_idx = i % (len(modified_train_x) // 2)
 
-        img1 = train_x[pair_idx*2]
-        img2 = train_x[pair_idx*2 + 1]
+        pair_idx = train_id_list[i % len(train_id_list)]
+
+        img1 = train_x[pair_idx]
+        img2 = train_x[pair_idx + 1]
         combined_img = np.concatenate((img1, img2),axis=1)
 
-        y_true_img1 = onehot_2_index(train_y[pair_idx * 2])
-        y_true_img2 = onehot_2_index(train_y[pair_idx * 2 + 1])
+        y_true_img1 = onehot_2_index(train_y[pair_idx])
+        y_true_img2 = onehot_2_index(train_y[pair_idx + 1])
         combined_y_true = y_true_img1 + [x + 8 for x in y_true_img2]  #combined label
 
         label_mapping = {
@@ -751,8 +726,8 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
         }
 
         new_label = [0 for i in range(16)]
-        for i in range(len(combined_y_true)):
-            new_label[i] = label_mapping[combined_y_true[i]]
+        for j in range(len(combined_y_true)):
+            new_label[j] = label_mapping[combined_y_true[j]]
 
         init_index_list = env.reset(hori_list[pair_idx], vert_list[pair_idx], cate_list[pair_idx],
                                     combined_img, y_true=new_label)
@@ -760,6 +735,11 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
         observation = copy.deepcopy(init_index_list)
         total_reward = 0.
         p_step = 0
+
+        # image = get_cur_image(img1, img2, new_label)
+        # cv2.imshow("wwww", image)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
 
         while True:
             # RL choose action based on observation
@@ -781,28 +761,39 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
             # break while loop when end of this episode
             if done:
                 RL.train()
-                print(str(i), "\tsuccess\tstep length: ", str(p_step))
+                print(Fore.LIGHTGREEN_EX + f"{str(i)} \tsuccess\tstep length:  {str(p_step)}")
                 # target_DQN.set_weights(main_DQN.get_weights())
                 break
             elif p_step >= STOP_STEP - 1:
-                print(str(i), "\tunsuccess\tstep length: ", str(p_step))
+                print(Fore.LIGHTGREEN_EX + f"{str(i)} \tunsuccess\tstep length:  {str(p_step)}")
                 break
             step += 1
             p_step += 1
 
-
-            if p_step % 10 == 0:
+            if p_step % 100 == 0:
                 print("step:",p_step)
                 print("reward: ",reward)
-                print("total reward: ",total_reward)
+                print("total reward: ",total_reward/p_step)
+
+                # # 获取当前拼接状态
+                # current_img = get_cur_image(img1, img2, observation)  # observation 是当前状态
+                # # 转换为 Tensor 并调整维度 (H,W,C) -> (C,H,W)
+                # img_tensor = torch.tensor(current_img).permute(2, 0, 1).float() / 255.0
+                # # 记录到 TensorBoard
+                # writer.add_image('Puzzle/Current_State', img_tensor, p_step)
+                #
+
+                # target_img = get_cur_image(img1, img2, env.y_true)# y_true 是目标状态
+                #
+                # target_tensor = torch.tensor(target_img).permute(2, 0, 1).float() / 255.0
+                # writer.add_image('Puzzle/Target_State', target_tensor, p_step)
 
 
 
         total_reward_list.append(total_reward / (p_step + 1))
-        print("Episode Id: ", str(pair_idx), "\tTotal Reward: ", total_reward / (p_step + 1))
+        print(Fore.LIGHTRED_EX + f"Episode Id: {str(pair_idx)} \tTotal Reward:  {total_reward / (p_step + 1)}")
         torch.save(target_DQN.state_dict(),TARGET_MODEL_NAME)
         torch.save(main_DQN.state_dict(),MAIN_MODEL_NAME)
-
 
         # update epsilon
         RL.epsilon = RL.epsilon * RL.epsilon_decay if RL.epsilon > RL.epsilon_min else RL.epsilon_min
@@ -832,14 +823,14 @@ def evaluate_test_set():
         np.random.shuffle(test_id_list)
     with torch.no_grad():
         for i in range(TEST_NUMBER):
-            pair_idx = i % (len(test_x) // 2)
+            pair_idx = i % (len(test_y))
 
-            img1 = train_x[pair_idx * 2]
-            img2 = train_x[pair_idx * 2 + 1]
+            img1 = train_x[pair_idx]
+            img2 = train_x[pair_idx + 1]
             combined_img = np.concatenate((img1, img2), axis=1)
 
-            y_true_img1 = onehot_2_index(test_y[pair_idx * 2])
-            y_true_img2 = onehot_2_index(test_y[pair_idx * 2 + 1])
+            y_true_img1 = onehot_2_index(test_y[pair_idx])
+            y_true_img2 = onehot_2_index(test_y[pair_idx + 1])
             combined_y_true = y_true_img1 + [x + 8 for x in y_true_img2]
 
             label_mapping = {
@@ -873,7 +864,7 @@ def evaluate_test_set():
             done = False
             while True:
                 if step >= TEST_STEP:
-                    observation_, _, done_, cate_, hori_, vert_ = env.step(28)
+                    observation_, _, done_, cate_, hori_, vert_ = env.step(120)
                     if done_:
                         success += 1
                         print(str(i), "\tsuccess\tstep length: ", str(step), "\tsuccess rate\t",
@@ -890,7 +881,7 @@ def evaluate_test_set():
                                             test_cate_list[pair_idx], img1, img2)
 
                     # RL take action and get next observation and reward
-                    _, _, done, cate, hori, vert = env.step(28)
+                    _, _, done, cate, hori, vert = env.step(120)
                     observation_, _, done_, cate_, hori_, vert_ = env.step(action)
                     # old_obs_img =get_cur_image(test_x[episode],observation)
                     obs_img_ = get_cur_image(test_x[pair_idx], observation_)
@@ -939,11 +930,11 @@ def evaluate_test_set():
 if __name__ == "__main__":
     # maze game
     env = Puzzle_Env()
-    SAMPLE_ACTION_NUMBER = 28
+    SAMPLE_ACTION_NUMBER = 120
     TARGET_MODEL_NAME='sd2rl512_pretrain.pth'
     
     MAIN_MODEL_NAME='sd2rl_main512_pretrain.pth'
-    EPSILON_MAX=0.6
+    EPSILON_MAX=0.9
     EPSILON_MIN=0.1
     
 
@@ -959,7 +950,7 @@ if __name__ == "__main__":
     # target_DQN.save_weights('RL_weight/RL_SD2RL_3_512feature_model_weight_1')
 
     TEST_STEP = 20  # the step used in evaluation
-    SAMPLE_ACTION_NUMBER = 28
+    SAMPLE_ACTION_NUMBER = 120
     # target_DQN = FC_Model()
     # target_DQN.load_weights('RL_weight/RL_SD2RL_3_512feature_model_weight_1')
     # print(target_DQN.weights)
