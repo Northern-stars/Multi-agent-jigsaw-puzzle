@@ -30,7 +30,7 @@ test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
 
-BATCH_SIZE=64
+BATCH_SIZE=32
 MODEL_NAME="outsider_model.pth"
 
 
@@ -92,16 +92,32 @@ class fen_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(fen_model,self).__init__()
         self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Identity()
-        self.fc1=nn.Linear(1280,hidden_size1)
+        self.ef.classifier=nn.Linear(1280,64)
+        self.fc1=nn.Linear(128*12,hidden_size1)
         self.relu=nn.ReLU()
         self.bn=nn.BatchNorm1d(hidden_size1)
-        self.do=nn.Dropout1d(p=0.3)
+        self.do=nn.Dropout1d(p=0.1)
         self.fc2=nn.Linear(hidden_size1,hidden_size2)
+        self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
+        self.vert_set=[(i,i+3) for i in range(3*2)]
     
-    def forward(self,x):
-        x=self.ef(x)
-        x=self.do(x)
+    def forward(self,image):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
+        
+        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][0]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
+        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][0]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
+        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
+        x=self.do(feature_tensor)
         x=self.fc1(x)
         x=self.do(x)
         x=self.bn(x)
@@ -119,7 +135,7 @@ class outsider_model(nn.Module):
         self.fc1=nn.Linear(hidden_size2,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
-        self.dp1=nn.Dropout1d(p=0.3)
+        self.dp1=nn.Dropout1d(p=0.1)
         self.fc2=nn.Linear(hidden_size2,hidden_size2)
         self.bn2=nn.BatchNorm1d(hidden_size2)
         self.relu2=nn.ReLU()
@@ -138,12 +154,12 @@ class outsider_model(nn.Module):
 
 
 
-model=outsider_model(512,512).to(device)
+model=outsider_model(256,256).to(device)
 
 
 
 loss_fn=nn.CrossEntropyLoss().to(device)
-optimizer=torch.optim.Adam(model.parameters(),lr=1e-4)
+optimizer=torch.optim.Adam(model.parameters(),lr=1e-3)
 
 def train(epoch_num=5000,load=True):
     if load:
@@ -234,7 +250,7 @@ def test():
 
 
 if __name__=="__main__":
-    HORI_MODEL_NAME="hori_ef0.pth"
-    VERT_MODEL_NAME="vert_ef0.pth"
-    # train(50)
+    # HORI_MODEL_NAME="hori_ef0.pth"
+    # VERT_MODEL_NAME="vert_ef0.pth"
+    train(50,load=False)
     test()
