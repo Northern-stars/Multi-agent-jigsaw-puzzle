@@ -10,10 +10,9 @@ import copy
 import torch
 import itertools
 
-from tensorflow.python.ops.gen_array_ops import deep_copy
 from torch import nn
 from pytorch_hori_pretrain import fen_model
-from torch.utils.tensorboard import SummaryWriter
+
 
 
 
@@ -693,7 +692,7 @@ class Agent:
 def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5):
     #This is the main train function
     step = 0
-    writer = SummaryWriter('runs/puzzle_experiment')
+
     # np.random.seed(1)
     modified_train_x = copy.deepcopy(train_x)
     modified_train_y = copy.deepcopy(train_y)
@@ -796,18 +795,6 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
                 print("step:",p_step)
                 print("reward: ",reward)
                 print("total reward: ",total_reward)
-                # 获取当前拼接状态
-                current_img = get_cur_image(img1, img2, observation)  # observation 是当前状态
-                # 转换为 Tensor 并调整维度 (H,W,C) -> (C,H,W)
-                img_tensor = torch.tensor(current_img).permute(2, 0, 1).float() / 255.0
-                # 记录到 TensorBoard
-                writer.add_image('Puzzle/Current_State', img_tensor, p_step)
-
-
-                target_img = get_cur_image(img1, img2, env.y_true)# y_true 是目标状态
-                target_tensor = torch.tensor(target_img).permute(2, 0, 1).float() / 255.0
-                writer.add_image('Puzzle/Target_State', target_tensor, p_step)
-
 
 
 
