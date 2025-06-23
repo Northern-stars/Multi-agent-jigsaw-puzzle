@@ -1,7 +1,7 @@
 import time
 import random
 
-import cv2
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -12,7 +12,7 @@ import itertools
 from colorama import init, Fore, Back, Style
 
 from torch import nn
-from pytorch_hori_pretrain import fen_model
+from pretrain import fen_model
 from torch.utils.tensorboard import SummaryWriter
 
 # color print
@@ -40,7 +40,7 @@ EPSILON_MIN=0.1
 GAMMA=0.995
 BATCH_SIZE=5
 
-SAMPLE_ACTION_NUMBER=28
+SAMPLE_ACTION_NUMBER=120
 
 TRAIN_NUMBER=200
 TEST_NUMBER=300
@@ -74,8 +74,8 @@ test_vert_list=np.zeros(9000)
 vert_list=np.zeros(9000)
 
 
-TARGET_MODEL_NAME="sd2rl512_3x6.pth"
-MAIN_MODEL_NAME='sd2rl_main512_3x6.pth'
+TARGET_MODEL_NAME="sd2rl256_3x6.pth"
+MAIN_MODEL_NAME='sd2rl_main256_3x6.pth'
 
 
 
@@ -373,29 +373,29 @@ class dqn_model(nn.Module):
 
 
 
-        hori_feature_0_1 = self.FEN_hori(torch.cat([fragment_0, fragment_1], axis=2))
+        hori_feature_0_1 = self.FEN_hori(fragment_0, fragment_1)
         hori_feature_0_1 = self.fc_0(hori_feature_0_1)
-        hori_feature_1_2 = self.FEN_hori(torch.cat([fragment_1, fragment_2], axis=2))
+        hori_feature_1_2 = self.FEN_hori(fragment_1, fragment_2)
         hori_feature_1_2 = self.fc_0(hori_feature_1_2)
-        hori_feature_3_4 = self.FEN_hori(torch.cat([fragment_3, fragment_4], axis=2))
+        hori_feature_3_4 = self.FEN_hori(fragment_3, fragment_4)
         hori_feature_3_4 = self.fc_0(hori_feature_3_4)
-        hori_feature_4_5 = self.FEN_hori(torch.cat([fragment_4, fragment_5], axis=2))
+        hori_feature_4_5 = self.FEN_hori(fragment_4, fragment_5)
         hori_feature_4_5 = self.fc_0(hori_feature_4_5)
-        hori_feature_6_7 = self.FEN_hori(torch.cat([fragment_6, fragment_7], axis=2))
+        hori_feature_6_7 = self.FEN_hori(fragment_6, fragment_7)
         hori_feature_6_7 = self.fc_0(hori_feature_6_7)
-        hori_feature_7_8 = self.FEN_hori(torch.cat([fragment_7, fragment_8], axis=2))
+        hori_feature_7_8 = self.FEN_hori(fragment_7, fragment_8)
         hori_feature_7_8 = self.fc_0(hori_feature_7_8)
-        hori_feature_9_10 = self.FEN_hori(torch.cat([fragment_9, fragment_10], axis=2))
+        hori_feature_9_10 = self.FEN_hori(fragment_9, fragment_10)
         hori_feature_9_10 = self.fc_0(hori_feature_9_10)
-        hori_feature_10_11 = self.FEN_hori(torch.cat([fragment_10, fragment_11], axis=2))
+        hori_feature_10_11 = self.FEN_hori(fragment_10, fragment_11)
         hori_feature_10_11 = self.fc_0(hori_feature_10_11)
-        hori_feature_12_13 = self.FEN_hori(torch.cat([fragment_12, fragment_13], axis=2))
+        hori_feature_12_13 = self.FEN_hori(fragment_12, fragment_13)
         hori_feature_12_13 = self.fc_0(hori_feature_12_13)
-        hori_feature_13_14 = self.FEN_hori(torch.cat([fragment_13, fragment_14], axis=2))
+        hori_feature_13_14 = self.FEN_hori(fragment_13, fragment_14)
         hori_feature_13_14 = self.fc_0(hori_feature_13_14)
-        hori_feature_15_16 = self.FEN_hori(torch.cat([fragment_15, fragment_16], axis=2))
+        hori_feature_15_16 = self.FEN_hori(fragment_15, fragment_16)
         hori_feature_15_16 = self.fc_0(hori_feature_15_16)
-        hori_feature_16_17 = self.FEN_hori(torch.cat([fragment_16, fragment_17], axis=2))
+        hori_feature_16_17 = self.FEN_hori(fragment_16, fragment_17)
         hori_feature_16_17 = self.fc_0(hori_feature_16_17)
 
 
@@ -407,29 +407,29 @@ class dqn_model(nn.Module):
                                   hori_feature_15_16,hori_feature_16_17], dim=1)
 
 
-        vert_feature_0_3 = self.FEN_vert(torch.cat([fragment_0, fragment_3],axis=3))
+        vert_feature_0_3 = self.FEN_vert(fragment_0, fragment_3)
         vert_feature_0_3=self.fc_0(vert_feature_0_3)
-        vert_feature_1_4 = self.FEN_vert(torch.cat([fragment_1, fragment_4],axis=3))
+        vert_feature_1_4 = self.FEN_vert(fragment_1, fragment_4)
         vert_feature_1_4=self.fc_0(vert_feature_1_4)
-        vert_feature_2_5 = self.FEN_vert(torch.cat([fragment_2, fragment_5],axis=3))
+        vert_feature_2_5 = self.FEN_vert(fragment_2, fragment_5)
         vert_feature_2_5=self.fc_0(vert_feature_2_5)
-        vert_feature_3_6 = self.FEN_vert(torch.cat([fragment_3, fragment_6],axis=3))
+        vert_feature_3_6 = self.FEN_vert(fragment_3, fragment_6)
         vert_feature_3_6=self.fc_0(vert_feature_3_6)
-        vert_feature_4_7 = self.FEN_vert(torch.cat([fragment_4, fragment_7],axis=3))
+        vert_feature_4_7 = self.FEN_vert(fragment_4, fragment_7)
         vert_feature_4_7=self.fc_0(vert_feature_4_7)
-        vert_feature_5_8 = self.FEN_vert(torch.cat([fragment_5, fragment_8],axis=3))
+        vert_feature_5_8 = self.FEN_vert(fragment_5, fragment_8)
         vert_feature_5_8=self.fc_0(vert_feature_5_8)
-        vert_feature_9_12 = self.FEN_vert(torch.cat([fragment_9, fragment_12],axis=3))
+        vert_feature_9_12 = self.FEN_vert(fragment_9, fragment_12)
         vert_feature_9_12=self.fc_0(vert_feature_9_12)
-        vert_feature_10_13 = self.FEN_vert(torch.cat([fragment_10, fragment_13],axis=3))
+        vert_feature_10_13 = self.FEN_vert(fragment_10, fragment_13)
         vert_feature_10_13=self.fc_0(vert_feature_10_13)
-        vert_feature_11_14 = self.FEN_vert(torch.cat([fragment_11, fragment_14],axis=3))
+        vert_feature_11_14 = self.FEN_vert(fragment_11, fragment_14)
         vert_feature_11_14=self.fc_0(vert_feature_11_14)
-        vert_feature_12_15 = self.FEN_vert(torch.cat([fragment_12, fragment_15],axis=3))
+        vert_feature_12_15 = self.FEN_vert(fragment_12, fragment_15)
         vert_feature_12_15=self.fc_0(vert_feature_12_15)
-        vert_feature_13_16 = self.FEN_vert(torch.cat([fragment_13, fragment_16],axis=3))
+        vert_feature_13_16 = self.FEN_vert(fragment_13, fragment_16)
         vert_feature_13_16=self.fc_0(vert_feature_13_16)
-        vert_feature_14_17 = self.FEN_vert(torch.cat([fragment_14, fragment_17],axis=3))
+        vert_feature_14_17 = self.FEN_vert(fragment_14, fragment_17)
         vert_feature_14_17=self.fc_0(vert_feature_14_17)
 
         vert_feature = torch.cat([vert_feature_0_3, vert_feature_1_4, vert_feature_2_5,
@@ -691,16 +691,16 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
         # RL.empty_memory()
         if i > 300:
             global SAMPLE_ACTION_NUMBER
-            SAMPLE_ACTION_NUMBER = 28
+            SAMPLE_ACTION_NUMBER = 120
             STOP_STEP = 300
             optimizer=torch.optim.Adam(main_DQN.parameters(),lr=final_phase_lr,eps=1e-8)
         elif i > 100:
-            SAMPLE_ACTION_NUMBER = 28
+            SAMPLE_ACTION_NUMBER = 120
             STOP_STEP =300
             optimizer=torch.optim.Adam(main_DQN.parameters(),lr=middle_phase_lr,eps=1e-8)
             print(i)
         else:
-            SAMPLE_ACTION_NUMBER = 28
+            SAMPLE_ACTION_NUMBER = 120
             STOP_STEP = 400
             optimizer=torch.optim.Adam(main_DQN.parameters(),lr=start_phase_lr,eps=1e-8)
             print(i)
@@ -737,9 +737,7 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
         p_step = 0
 
         # image = get_cur_image(img1, img2, new_label)
-        # cv2.imshow("wwww", image)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+
 
         while True:
             # RL choose action based on observation
@@ -825,8 +823,8 @@ def evaluate_test_set():
         for i in range(TEST_NUMBER):
             pair_idx = i % (len(test_y))
 
-            img1 = train_x[pair_idx]
-            img2 = train_x[pair_idx + 1]
+            img1 = test_x[pair_idx]
+            img2 = test_x[pair_idx + 1]
             combined_img = np.concatenate((img1, img2), axis=1)
 
             y_true_img1 = onehot_2_index(test_y[pair_idx])
@@ -853,7 +851,7 @@ def evaluate_test_set():
 
             observation = copy.deepcopy(index_list)
 
-            # observation, _, _, cate, hori, vert = env.step(28)
+            # observation, _, _, cate, hori, vert = env.step(120)
             obs_img = get_cur_image(test_x[pair_idx], observation)
             obs_img=torch.tensor(obs_img).permute([2,0,1])
             obs_img=obs_img.unsqueeze(0).to(torch.float).to(device)
@@ -912,7 +910,7 @@ def evaluate_test_set():
                                 loc[env.index_list[j]]=j
                             # print(f"loc:{loc}, true{env.y_true}")
                             print(str(i), "\tunsuccess\tstep length: ", str(step))
-                        # _, _, _, cate, hori, vert = env.step(28)
+                        # _, _, _, cate, hori, vert = env.step(120)
                         whole_cate += cate
                         whole_hori += hori
                         whole_vert += vert
@@ -931,10 +929,7 @@ if __name__ == "__main__":
     # maze game
     env = Puzzle_Env()
     SAMPLE_ACTION_NUMBER = 120
-    TARGET_MODEL_NAME='sd2rl512_pretrain.pth'
-    
-    MAIN_MODEL_NAME='sd2rl_main512_pretrain.pth'
-    EPSILON_MAX=0.9
+    EPSILON_MAX=0.693494 # 52
     EPSILON_MIN=0.1
     
 
