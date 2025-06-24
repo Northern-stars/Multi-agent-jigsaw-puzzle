@@ -1,6 +1,6 @@
 import time
 import random
-
+from copy import deepcopy
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -247,8 +247,13 @@ class Puzzle_Env(object):
             self.initial_cate_score_list = copy.deepcopy(cate_score)
             self.initial_img = copy.deepcopy(episode_img)
 
-            self.index_list = list(range(16))
+            # self.index_list = list(range(16))
+            shuffledIndex = deepcopy(y_true)
+            for _ in range(4):
+                pos1, pos2 = random.sample(range(16), 2)
+                shuffledIndex[pos1], shuffledIndex[pos2] = shuffledIndex[pos2], shuffledIndex[pos1]
 
+            self.index_list = shuffledIndex
             return self.index_list
 
 
@@ -940,7 +945,7 @@ if __name__ == "__main__":
                epsilon_min=EPSILON_MIN,
                epsilon_decay=GAMMA
                )  
-    run_maze(load=True,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5)
+    run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5)
 
     # target_DQN.save_weights('RL_weight/RL_SD2RL_3_512feature_model_weight_1')
 
