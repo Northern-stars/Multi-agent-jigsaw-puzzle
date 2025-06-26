@@ -6,13 +6,14 @@ import copy
 import itertools
 from outsider_pretrain import fen_model
 from torchvision.models import efficientnet_b0
+import cv2
 
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=1000
+DONE_REWARD=2000
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-4
+ACTOR_LR=1e-5
 CRITIC_LR=1e-3
 ENCODER_LR=1e-4
 ACTOR_SCHEDULAR_STEP=200
@@ -28,9 +29,9 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 EPOCH_NUM=500
 LOAD_MODEL=True
-SWAP_NUM=[2,2,2,4]
-MAX_STEP=[240,240,120,240]
-MODEL_NAME="(1).pth"
+SWAP_NUM=[1,2,2,4]
+MAX_STEP=[120,240,120,240]
+MODEL_NAME="(3)_pretrain.pth"
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -50,6 +51,7 @@ class fen_model(nn.Module):
         super(fen_model,self).__init__()
         self.ef=efficientnet_b0(weights="DEFAULT")
         self.ef.classifier=nn.Linear(1280,64)
+        
         self.fc1=nn.Linear(128*12,hidden_size1)
         self.relu=nn.ReLU()
         self.bn=nn.BatchNorm1d(hidden_size1)
@@ -71,8 +73,8 @@ class fen_model(nn.Module):
             image[:,:,192:288,192:288]
         ]
         
-        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][0]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][0]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
+        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][1]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
+        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][1]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
         feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
         x=self.do(feature_tensor)
         x=self.fc1(x)
@@ -87,6 +89,15 @@ class actor_model(nn.Module):
     def __init__(self,action_num):
         super(actor_model,self).__init__()
         self.image_fen_model=fen_model(256,256)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Actor missing keys hori",load_result_hori.missing_keys)
+        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,128)
         self.fc1=nn.Linear(384,128)
@@ -109,6 +120,15 @@ class critic_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(critic_model,self).__init__()
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Critic missing keys hori",load_result_hori.missing_keys)
+        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
         self.fc1=nn.Linear(hidden_size1,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
@@ -170,6 +190,7 @@ class env:
             image_index=id
         else:
             image_index=random.choices(range(0,self.sample_number),k=image_num)
+        print(f"Episode image: {image_index}")
         for i in range(len(image_index)):
             image_raw=self.image[image_index[i]]
             permutation_raw=self.label[image_index[i]]
@@ -283,6 +304,15 @@ class env:
         # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), CLIP_GRAD_NORM)
         self.actor_optimizer_list[actor_index].step()
         # self.encoder_optimizer.step()
+
+    def show_image(self,image_permutation_list):
+        for i in range(self.image_num):
+            image,_=self.get_image(permutation=image_permutation_list[i])
+            image=image.permute([1,2,0]).numpy()
+            cv2.imshow(f"Final image {i}",image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
 
 
     def permute(self,cur_permutation,action_index):
@@ -408,8 +438,9 @@ class env:
 
                         ret = torch.tensor(returns_list[j], dtype=torch.float32,
                                         device=self.device).unsqueeze(0)
-                        returns_list[j] = (ret - ret.mean()) / (ret.std() + BASIC_BIAS)
-
+                        if ret.numel()>1:
+                            ret = (ret - ret.mean()) / (ret.std() + BASIC_BIAS)
+                        returns_list[j]=ret
                     filtered_critic_output_list=[x for x in critic_output_list if x!=[]]
                     filtered_return_list=[x for x in returns_list if x!=[]]
                     critic_loss = self.critic_update(filtered_critic_output_list, filtered_return_list)
