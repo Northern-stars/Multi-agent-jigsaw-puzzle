@@ -33,6 +33,7 @@ LOAD_MODEL=False
 SWAP_NUM=[1,2,2,4]
 MAX_STEP=[120,240,120,240]
 MODEL_NAME="(3)_pretrain.pth"
+BATCH_SIZE=10
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -87,24 +88,24 @@ class fen_model(nn.Module):
 
 
 class actor_model(nn.Module):
-    def __init__(self,action_num):
+    def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
         super(actor_model,self).__init__()
-        self.image_fen_model=fen_model(256,256)
-        # state_dict=torch.load("pairwise_pretrain.pth")
-        # state_dict_replace = {
-        # k: v 
-        # for k, v in state_dict.items() 
-        # if k.startswith("ef.")
-        # }
-        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
-        # print("Actor missing keys hori",load_result_hori.missing_keys)
-        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+        self.image_fen_model=fen_model(hidden_size1,hidden_size1)
+        state_dict=torch.load("pairwise_pretrain.pth")
+        state_dict_replace = {
+        k: v 
+        for k, v in state_dict.items() 
+        if k.startswith("ef.")
+        }
+        load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        print("Actor missing keys hori",load_result_hori.missing_keys)
+        print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
-        self.outsider_fen_model.classifier=nn.Linear(1280,128)
-        self.fc1=nn.Linear(384,128)
+        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
-        self.fc2=nn.Linear(128,action_num)
+        self.fc2=nn.Linear(hidden_size2,action_num)
     
     def forward(self,image,outsider_piece):
         image_input=self.image_fen_model(image)
@@ -121,15 +122,15 @@ class critic_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(critic_model,self).__init__()
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
-        # state_dict=torch.load("pairwise_pretrain.pth")
-        # state_dict_replace = {
-        # k: v 
-        # for k, v in state_dict.items() 
-        # if k.startswith("ef.")
-        # }
-        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
-        # print("Critic missing keys hori",load_result_hori.missing_keys)
-        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+        state_dict=torch.load("pairwise_pretrain.pth")
+        state_dict_replace = {
+        k: v 
+        for k, v in state_dict.items() 
+        if k.startswith("ef.")
+        }
+        load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+        print("Critic missing keys hori",load_result_hori.missing_keys)
+        print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
         self.fc1=nn.Linear(hidden_size1,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
@@ -186,6 +187,7 @@ class env:
         self.buffer_size=buffer_size
         self.action_list=[[0 for _ in range((piece_num+buffer_size)*piece_num//2+1)] for __ in range(image_num)]
         self.piece_num=piece_num
+        self.entropy_weight=ENTROPY_WEIGHT
 
     
     def load_image(self,image_num,id=[]):
@@ -378,12 +380,13 @@ class env:
             action_tensor=torch.cat(actions).unsqueeze(-1)
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
             # next_state_tensor=torch.cat(next_states)
             pred_ret=self.critic_model(state_tensor)
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
             critic_loss=nn.functional.mse_loss(pred_ret,ret)
             advantage=ret-pred_ret.detach()
-            actor_loss=-(log_probs*advantage).mean()
+            actor_loss=-(log_probs*advantage).mean()+entropy.mean()*self.entropy_weight
 
             critic_loss_sum+=critic_loss.item()
 
@@ -393,10 +396,14 @@ class env:
             actor_loss.backward()
 
             critic_loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
 
             self.critic_optimizer.step()
         print(f"Critic loss sum: {critic_loss_sum}")
+        if self.entropy_weight>=ENTROPY_MIN:
+            self.entropy_weight*=ENTROPY_GAMMA
 
     def step(self, epoch=500, load=True):
 
@@ -483,13 +490,13 @@ class env:
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
-    critic=critic_model(hidden_size1=256,hidden_size2=128).to(device=DEVICE)
-    actor=actor_model(46).to(DEVICE)
+    critic=critic_model(hidden_size1=512,hidden_size2=256).to(device=DEVICE)
+    actor=actor_model(hidden_size1=512,hidden_size2=256,outsider_hidden_size=256,action_num=46).to(DEVICE)
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
                     memory_size=1000,
-                    batch_size=5,
+                    batch_size=BATCH_SIZE,
                     gamma=0.99,
                     device=DEVICE,
                     actor_model=actor,
