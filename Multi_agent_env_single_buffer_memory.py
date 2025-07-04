@@ -21,19 +21,22 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-PAIR_WISE_REWARD=.4
-CATE_REWARD=.6
-CONSISTENCY_REWARD=.5
+PAIR_WISE_REWARD=.2
+CATE_REWARD=.8
+CONSISTENCY_REWARD=.4
 PANELTY=-1
 ENTROPY_WEIGHT=0.0075
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
-EPOCH_NUM=500
-LOAD_MODEL=False
-SWAP_NUM=[1,2,2,4]
-MAX_STEP=[120,240,120,240]
+EPOCH_NUM=1000
+LOAD_MODEL=True
+SWAP_NUM=[1,2,3,4]
+MAX_STEP=[200,300,300,300]
 MODEL_NAME="(3)_pretrain.pth"
 BATCH_SIZE=10
+EPSILON=0.3
+EPSILON_GAMMA=0.998
+EPSILON_MIN=0.1
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -163,7 +166,11 @@ class env:
                 #  encoder,
                  image_num,
                  buffer_size,
+                 entropy_weight,
+                 epsilon,
+                 epsilon_gamma,
                  piece_num=9
+                 
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -187,7 +194,9 @@ class env:
         self.buffer_size=buffer_size
         self.action_list=[[0 for _ in range((piece_num+buffer_size)*piece_num//2+1)] for __ in range(image_num)]
         self.piece_num=piece_num
-        self.entropy_weight=ENTROPY_WEIGHT
+        self.entropy_weight=entropy_weight
+        self.epsilon=epsilon
+        self.epsilon_gamma=epsilon_gamma
 
     
     def load_image(self,image_num,id=[]):
@@ -290,7 +299,14 @@ class env:
             cv2.imshow(f"Final image {i}",image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
-
+    
+    def epsilon_greedy(self,action):
+        prob=random.random()
+        if prob>self.epsilon:
+            return action
+        else:
+            epsilon_action=(action+random.randint(1,len(self.action_list[0])))%len(self.action_list[0])
+            return epsilon_action
 
 
     def permute(self,cur_permutation,action_index):
@@ -357,6 +373,8 @@ class env:
             ret=[]
             actions=[]
             next_states=[]
+            reward=[]
+            done=[]
             
             
             for a in range(len(sample_dicts)):
@@ -371,20 +389,25 @@ class env:
                     next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b])
                     next_states.append(next_image)
                     ret.append(self.mkv_memory[a]["Return_list"][do_list[b]])
+                    reward.append(self.mkv_memory[a]["Reward_list"][b])
+                    done.append(self.mkv_memory[a]["Done_list"][b])
 
                     
             
             state_tensor=torch.cat(states,dim=0)
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
             probs=self.actor_model(state_tensor,outsider_tensor)
-            action_tensor=torch.cat(actions).unsqueeze(-1)
+            action_tensor=torch.tensor(actions).to(self.device).unsqueeze(-1)
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
             entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
-            # next_state_tensor=torch.cat(next_states)
+            next_state_tensor=torch.cat(next_states)
+            pred_next_ret=self.critic_model(next_state_tensor)
             pred_ret=self.critic_model(state_tensor)
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            critic_loss=nn.functional.mse_loss(pred_ret,ret)
+            reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
+            done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
+            critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
             advantage=ret-pred_ret.detach()
             actor_loss=-(log_probs*advantage).mean()+entropy.mean()*self.entropy_weight
 
@@ -455,10 +478,11 @@ class env:
                         probs = self.actor_model(image, outsider)
                         dist  = torch.distributions.Categorical(probs)
                         action = dist.sample()
+                        action=self.epsilon_greedy(action=action.item())
                         model_action.append(action)
-                        self.action_list[j][action.item()]+=1
+                        self.action_list[j][action]+=1
 
-                        new_perm = self.permute(perm_with_buf, action.item())
+                        new_perm = self.permute(perm_with_buf, action)
                         permutation_list[j], buffer = new_perm[:self.piece_num], new_perm[self.piece_num:]
 
                         do_list.append(j)
@@ -475,6 +499,8 @@ class env:
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list))]}")
             print(f"Action_list: {self.action_list}")
+            if self.epsilon>EPSILON_MIN:
+                self.epsilon*=EPSILON_GAMMA
             self.update()
 
             torch.save(self.critic_model.state_dict(), "Critic" + MODEL_NAME)
@@ -495,7 +521,7 @@ if __name__ == "__main__":
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
-                    memory_size=1000,
+                    memory_size=5000,
                     batch_size=BATCH_SIZE,
                     gamma=0.99,
                     device=DEVICE,
@@ -503,7 +529,10 @@ if __name__ == "__main__":
                     critic_model=critic,
                     # encoder=feature_encoder,
                     image_num=2,
-                    buffer_size=1)
+                    buffer_size=1,
+                    epsilon=EPSILON,
+                    epsilon_gamma=EPSILON_GAMMA,
+                   entropy_weight=ENTROPY_WEIGHT)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
     # reward_list,done_list=environment.get_reward([[0,1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15,16,17]])
     # print(reward_list,done_list)
