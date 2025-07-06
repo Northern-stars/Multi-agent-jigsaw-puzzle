@@ -273,6 +273,8 @@ class env:
                 reward_list[i]+=(permutation_list[i][j]%piece_num==j)*CATE_REWARD#Category reward
             
             max_piece=max(piece_range)#Consistancy reward
+            if -1 in permutation_list[i]:
+                reward_list[i]+=0.5*CONSISTENCY_REWARD
             if max_piece==piece_num-3:
                 reward_list[i]+=1*CONSISTENCY_REWARD
             elif max_piece==piece_num-2:
@@ -400,7 +402,8 @@ class env:
             action_tensor=torch.tensor(actions).to(self.device).unsqueeze(-1)
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
-            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+            entropy = torch.distributions.Categorical(probs).entropy()
+
             next_state_tensor=torch.cat(next_states)
             pred_next_ret=self.critic_model(next_state_tensor)
             pred_ret=self.critic_model(state_tensor)
@@ -424,7 +427,7 @@ class env:
             self.actor_optimizer.step()
 
             self.critic_optimizer.step()
-        print(f"Critic loss sum: {critic_loss_sum}")
+        print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}")
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
 
