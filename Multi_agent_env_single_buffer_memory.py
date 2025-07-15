@@ -8,13 +8,13 @@ from outsider_pretrain import fen_model
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset,DataLoader
 import cv2
-
+import Vit
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=2000
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-5
+ACTOR_LR=1e-4
 CRITIC_LR=1e-3
 ENCODER_LR=1e-4
 ACTOR_SCHEDULAR_STEP=200
@@ -23,18 +23,18 @@ ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
-CONSISTENCY_REWARD=.4
+CONSISTENCY_REWARD=.2
 PANELTY=-1
 ENTROPY_WEIGHT=0.0075
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 EPOCH_NUM=1000
-LOAD_MODEL=True
+LOAD_MODEL=False
 SWAP_NUM=[1,2,3,4]
 MAX_STEP=[200,300,300,300]
-MODEL_NAME="(3)_pretrain.pth"
-BATCH_SIZE=10
-EPSILON=0.3
+MODEL_NAME="(5).pth"
+BATCH_SIZE=5
+EPSILON=0.2
 EPSILON_GAMMA=0.998
 EPSILON_MIN=0.1
 
@@ -51,107 +51,198 @@ train_x=np.load(train_x_path)
 train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
 
-class fen_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2):
-        super(fen_model,self).__init__()
-        self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,64)
+# class fen_model(nn.Module):
+#     def __init__(self,hidden_size1,hidden_size2):
+#         super(fen_model,self).__init__()
+#         self.ef=efficientnet_b0(weights="DEFAULT")
+#         self.ef.classifier=nn.Linear(1280,64)
         
-        self.fc1=nn.Linear(128*12,hidden_size1)
-        self.relu=nn.ReLU()
-        self.bn=nn.BatchNorm1d(hidden_size1)
-        self.do=nn.Dropout1d(p=0.1)
-        self.fc2=nn.Linear(hidden_size1,hidden_size2)
-        self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
-        self.vert_set=[(i,i+3) for i in range(3*2)]
+#         self.fc1=nn.Linear(128*12,hidden_size1)
+#         self.relu=nn.ReLU()
+#         self.bn=nn.BatchNorm1d(hidden_size1)
+#         self.do=nn.Dropout1d(p=0.1)
+#         self.fc2=nn.Linear(hidden_size1,hidden_size2)
+#         self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
+#         self.vert_set=[(i,i+3) for i in range(3*2)]
     
-    def forward(self,image):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
+#     def forward(self,image):
+#         image_fragments=[
+#             image[:,:,0:96,0:96],
+#             image[:,:,0:96,96:192],
+#             image[:,:,0:96,192:288],
+#             image[:,:,96:192,0:96],
+#             image[:,:,96:192,96:192],
+#             image[:,:,96:192,192:288],
+#             image[:,:,192:288,0:96],
+#             image[:,:,192:288,96:192],
+#             image[:,:,192:288,192:288]
+#         ]
         
-        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][1]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][1]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
-        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
-        x=self.do(feature_tensor)
-        x=self.fc1(x)
-        x=self.do(x)
-        x=self.bn(x)
-        x=self.relu(x)
-        x=self.fc2(x)
-        return x
+#         hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][1]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
+#         vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][1]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
+#         feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
+#         x=self.do(feature_tensor)
+#         x=self.fc1(x)
+#         x=self.do(x)
+#         x=self.bn(x)
+#         x=self.relu(x)
+#         x=self.fc2(x)
+#         return x
 
+
+
+
+# class actor_model(nn.Module):
+#     def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
+#         super(actor_model,self).__init__()
+#         self.image_fen_model=fen_model(hidden_size1,hidden_size1)
+#         state_dict=torch.load("pairwise_pretrain.pth")
+#         state_dict_replace = {
+#         k: v 
+#         for k, v in state_dict.items() 
+#         if k.startswith("ef.")
+#         }
+#         load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+#         print("Actor missing keys hori",load_result_hori.missing_keys)
+#         print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+#         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
+#         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+#         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+#         self.relu=nn.ReLU()
+#         self.dropout=nn.Dropout(p=0.1)
+#         self.fc2=nn.Linear(hidden_size2,action_num)
+    
+#     def forward(self,image,outsider_piece):
+#         image_input=self.image_fen_model(image)
+#         outsider_input=self.outsider_fen_model(outsider_piece)
+#         feature_tensor=torch.cat([image_input,outsider_input],dim=1)
+#         out=self.fc1(feature_tensor)
+#         out=self.relu(out)
+#         out=self.dropout(out)
+#         out=self.fc2(out)
+#         out=nn.functional.softmax(out,dim=1)
+#         return out
+
+# class critic_model(nn.Module):
+#     def __init__(self,hidden_size1,hidden_size2):
+#         super(critic_model,self).__init__()
+#         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
+#         state_dict=torch.load("pairwise_pretrain.pth")
+#         state_dict_replace = {
+#         k: v 
+#         for k, v in state_dict.items() 
+#         if k.startswith("ef.")
+#         }
+#         load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+#         print("Critic missing keys hori",load_result_hori.missing_keys)
+#         print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+#         self.fc1=nn.Linear(hidden_size1,hidden_size2)
+#         self.relu=nn.ReLU()
+#         self.dropout=nn.Dropout(p=0.1)
+#         self.fc=nn.Linear(hidden_size2,1)
+    
+#     def forward(self,image):
+#         feature_tensor=self.fen_model(image)
+#         out=self.fc1(feature_tensor)
+#         out=self.relu(out)
+#         out=self.dropout(out)
+#         out=self.fc(out)
+#         return out
 
 class actor_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
-        super(actor_model,self).__init__()
-        self.image_fen_model=fen_model(hidden_size1,hidden_size1)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Actor missing keys hori",load_result_hori.missing_keys)
-        print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
-        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
-        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
-        self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+    def __init__(self, 
+                 picture_size,
+                 outsider_size,
+                 patch_size,
+                 encoder_layer_num,
+                 n_head,
+                 transformer_output_size,
+                 unet_hidden,
+                 encoder_hidden,
+                 output_channel,
+                 actor_hidden,
+                 action_num,
+                 dropout=0.1):
+        super().__init__()
+        num_patches=(outsider_size[2]*outsider_size[3]//(patch_size**2)+picture_size[2]*picture_size[3]//(patch_size**2))
+        self.local_fen=Vit.UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
+        self.image_embedding=Vit.PictureEmbedding(picture_size=picture_size,patch_size=patch_size)
+        self.outsider_embedding=Vit.PictureEmbedding(picture_size=outsider_size,patch_size=patch_size)
+        self.positional_embedding=Vit.PositionalEmbedding(d_model=output_channel*(patch_size**2),num_patches=num_patches)
+        self.encoder_layers=nn.ModuleList(
+            [
+                Vit.EncoderLayer((patch_size**2)*picture_size[1],encoder_hidden,n_head)
+                for _ in range(encoder_layer_num)
+            ]
+        )
+        self.transformer_fc=nn.Linear(output_channel*(patch_size**2),1)
+        self.fc1=nn.Linear(num_patches,transformer_output_size)
         self.relu=nn.ReLU()
-        self.dropout=nn.Dropout(p=0.1)
-        self.fc2=nn.Linear(hidden_size2,action_num)
-    
+        self.dropout=nn.Dropout(dropout)
+        self.fc2=nn.Linear(transformer_output_size,actor_hidden)
+        self.output=nn.Linear(actor_hidden,action_num)
+
+
     def forward(self,image,outsider_piece):
-        image_input=self.image_fen_model(image)
-        outsider_input=self.outsider_fen_model(outsider_piece)
-        feature_tensor=torch.cat([image_input,outsider_input],dim=1)
-        out=self.fc1(feature_tensor)
-        out=self.relu(out)
-        out=self.dropout(out)
-        out=self.fc2(out)
-        out=nn.functional.softmax(out,dim=1)
-        return out
+        fen_image=self.local_fen(image)
+        fen_outsider_piece=self.local_fen(outsider_piece)
+        image_tensor=self.image_embedding(fen_image)
+        outsider_tensor=self.outsider_embedding(fen_outsider_piece)
+        transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
+        transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
+        for layer in self.encoder_layers:
+            transformer_feature_tensor=layer(transformer_feature_tensor)
+        feature_tensor=self.transformer_fc(transformer_feature_tensor)
+        feature_tensor=feature_tensor.squeeze()
+        x=self.fc1(feature_tensor)
+        x=self.relu(x)
+        x=self.dropout(x)
+        x=self.fc2(x)
+        x=self.relu(x)
+        x=self.dropout(x)
+        x=self.output(x)
+        output=nn.functional.softmax(x,dim=-1)
+        return output
+
 
 class critic_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2):
-        super(critic_model,self).__init__()
-        self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Critic missing keys hori",load_result_hori.missing_keys)
-        print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
-        self.fc1=nn.Linear(hidden_size1,hidden_size2)
+    def __init__(self,
+                 picture_size,
+                 patch_size,
+                 encoder_layer_num,
+                 n_head,
+                 transformer_out_size,
+                 output_channel,
+                 unet_hidden,
+                 encoder_hidden,
+                 critic_hidden,
+                 dropout=0.1):
+        super().__init__()
+        self.local_fen=Vit.VisionTransformer(
+            picture_size=picture_size,
+            patch_size=patch_size,
+            encoder_layer_num=encoder_layer_num,
+            n_head=n_head,
+            out_size=transformer_out_size,
+            output_channel=output_channel,
+            unet_hidden=unet_hidden,
+            encoder_hidden=encoder_hidden,
+            dropout=dropout
+        )
+        self.fc1=nn.Linear(transformer_out_size,critic_hidden)
         self.relu=nn.ReLU()
-        self.dropout=nn.Dropout(p=0.1)
-        self.fc=nn.Linear(hidden_size2,1)
-    
+        self.dropout=nn.Dropout(dropout)
+        self.fc2=nn.Linear(critic_hidden,1)
     def forward(self,image):
-        feature_tensor=self.fen_model(image)
-        out=self.fc1(feature_tensor)
-        out=self.relu(out)
-        out=self.dropout(out)
-        out=self.fc(out)
+        transformer_output=self.local_fen(image)
+        x=self.fc1(transformer_output)
+        x=self.relu(x)
+        x=self.dropout(x)
+        out=self.fc2(x)
         return out
 
-# class Memory_data(Dataset):
-#     def __init__(self):
-#         super().__init__()
-#     def __len__()
-#     def __getitem__()
+
+
 
 class env:
     def __init__(self,
@@ -247,7 +338,7 @@ class env:
 
     def get_reward(self,permutation_list):
 
-        permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
+        # permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
         
         done_list=[0 for i in range(len(permutation_list))]
         reward_list=[PANELTY for i in range(len(permutation_list))]
@@ -272,17 +363,22 @@ class env:
                     piece_range[permutation_list[i][j]//piece_num]+=1
                 reward_list[i]+=(permutation_list[i][j]%piece_num==j)*CATE_REWARD#Category reward
             
+            
             max_piece=max(piece_range)#Consistancy reward
+
+            weight=0.2
             if -1 in permutation_list[i]:
-                reward_list[i]+=0.5*CONSISTENCY_REWARD
+                weight+=0.5*CONSISTENCY_REWARD
             if max_piece==piece_num-3:
-                reward_list[i]+=1*CONSISTENCY_REWARD
+                weight+=1*CONSISTENCY_REWARD
             elif max_piece==piece_num-2:
-                reward_list[i]+=2*CONSISTENCY_REWARD
+                weight+=2*CONSISTENCY_REWARD
             elif max_piece==piece_num-1:
-                reward_list[i]+=3*CONSISTENCY_REWARD
+                weight+=3*CONSISTENCY_REWARD
             elif max_piece==piece_num:
-                reward_list[i]+=5*CONSISTENCY_REWARD
+                weight+=5*CONSISTENCY_REWARD
+
+            reward_list[i]*=weight
             
             start_index=min(permutation_list[i])//piece_num*piece_num#Done reward
             if permutation_list[i]==list(range(start_index,start_index+piece_num)):
@@ -403,7 +499,6 @@ class env:
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
             entropy = torch.distributions.Categorical(probs).entropy()
-
             next_state_tensor=torch.cat(next_states)
             pred_next_ret=self.critic_model(next_state_tensor)
             pred_ret=self.critic_model(state_tensor)
@@ -519,8 +614,30 @@ class env:
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
-    critic=critic_model(hidden_size1=512,hidden_size2=256).to(device=DEVICE)
-    actor=actor_model(hidden_size1=512,hidden_size2=256,outsider_hidden_size=256,action_num=46).to(DEVICE)
+    # critic=critic_model(hidden_size1=512,hidden_size2=256).to(device=DEVICE)
+    # actor=actor_model(hidden_size1=512,hidden_size2=256,outsider_hidden_size=256,action_num=46).to(DEVICE)
+
+    critic=critic_model(picture_size=[1,3,288,288],
+                        patch_size=16,
+                        encoder_hidden=512,
+                        n_head=16,
+                        unet_hidden=1024,
+                        encoder_layer_num=2,
+                        critic_hidden=512,
+                        output_channel=3,
+                        transformer_out_size=512).to(DEVICE)
+    actor=actor_model(picture_size=[1,3,288,288],
+                      outsider_size=[1,3,96,96],
+                      patch_size=16,
+                      encoder_layer_num=2,
+                      n_head=16,
+                      transformer_output_size=512,
+                      unet_hidden=1024,
+                      encoder_hidden=512,
+                      output_channel=3,
+                      actor_hidden=256,
+                      action_num=46).to(DEVICE)
+
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
