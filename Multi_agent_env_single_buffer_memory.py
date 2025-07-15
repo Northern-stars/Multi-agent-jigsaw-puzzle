@@ -9,12 +9,13 @@ from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset,DataLoader
 import cv2
 import Vit
+import os
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=2000
+DONE_REWARD=20
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-4
+ACTOR_LR=1e-5
 CRITIC_LR=1e-3
 ENCODER_LR=1e-4
 ACTOR_SCHEDULAR_STEP=200
@@ -25,17 +26,19 @@ PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
 CONSISTENCY_REWARD=.2
 PANELTY=-1
-ENTROPY_WEIGHT=0.0075
+ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 EPOCH_NUM=1000
-LOAD_MODEL=False
-SWAP_NUM=[1,2,3,4]
+LOAD_MODEL=True
+SWAP_NUM=[2,3,3,4]
 MAX_STEP=[200,300,300,300]
 MODEL_NAME="(5).pth"
-BATCH_SIZE=5
-EPSILON=0.2
-EPSILON_GAMMA=0.998
+ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
+CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
+BATCH_SIZE=30
+EPSILON=0.3
+EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
@@ -341,7 +344,7 @@ class env:
         # permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
         
         done_list=[0 for i in range(len(permutation_list))]
-        reward_list=[PANELTY for i in range(len(permutation_list))]
+        reward_list=[0 for i in range(len(permutation_list))]
         edge_length=int(len(permutation_list[0])**0.5)
         piece_num=len(permutation_list[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
@@ -379,7 +382,7 @@ class env:
                 weight+=5*CONSISTENCY_REWARD
 
             reward_list[i]*=weight
-            
+            reward_list[i]+=PANELTY
             start_index=min(permutation_list[i])//piece_num*piece_num#Done reward
             if permutation_list[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
@@ -507,7 +510,7 @@ class env:
             done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
             critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
             advantage=ret-pred_ret.detach()
-            actor_loss=-(log_probs*advantage).mean()+entropy.mean()*self.entropy_weight
+            actor_loss=-(log_probs*advantage).mean()-entropy.mean()*self.entropy_weight
 
             critic_loss_sum+=critic_loss.item()
 
@@ -530,8 +533,8 @@ class env:
 
         
         if load:
-            self.critic_model.load_state_dict(torch.load("Critic" + MODEL_NAME))
-            self.actor_model.load_state_dict(torch.load("Actor"+MODEL_NAME))
+            self.critic_model.load_state_dict(torch.load(CRITIC_PATH))
+            self.actor_model.load_state_dict(torch.load(ACTOR_PATH))
 
         
         for i in range(epoch):
@@ -601,9 +604,9 @@ class env:
                 self.epsilon*=EPSILON_GAMMA
             self.update()
 
-            torch.save(self.critic_model.state_dict(), "Critic" + MODEL_NAME)
+            torch.save(self.critic_model.state_dict(), CRITIC_PATH)
             self.critic_schedular.step()
-            torch.save(self.actor_model.state_dict(),"Actor"+MODEL_NAME)
+            torch.save(self.actor_model.state_dict(),ACTOR_PATH)
             self.actor_schedular.step()
 
 
@@ -635,13 +638,13 @@ if __name__ == "__main__":
                       unet_hidden=1024,
                       encoder_hidden=512,
                       output_channel=3,
-                      actor_hidden=256,
+                      actor_hidden=512,
                       action_num=46).to(DEVICE)
 
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
-                    memory_size=5000,
+                    memory_size=2000,
                     batch_size=BATCH_SIZE,
                     gamma=0.99,
                     device=DEVICE,
