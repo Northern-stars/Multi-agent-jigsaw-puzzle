@@ -778,20 +778,6 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
                 print("reward: ",reward)
                 print("total reward: ",total_reward/p_step)
 
-                # # 获取当前拼接状态
-                # current_img = get_cur_image(img1, img2, observation)  # observation 是当前状态
-                # # 转换为 Tensor 并调整维度 (H,W,C) -> (C,H,W)
-                # img_tensor = torch.tensor(current_img).permute(2, 0, 1).float() / 255.0
-                # # 记录到 TensorBoard
-                # writer.add_image('Puzzle/Current_State', img_tensor, p_step)
-                #
-
-                # target_img = get_cur_image(img1, img2, env.y_true)# y_true 是目标状态
-                #
-                # target_tensor = torch.tensor(target_img).permute(2, 0, 1).float() / 255.0
-                # writer.add_image('Puzzle/Target_State', target_tensor, p_step)
-
-
 
         total_reward_list.append(total_reward / (p_step + 1))
         print(Fore.LIGHTRED_EX + f"Episode Id: {str(pair_idx)} \tTotal Reward:  {total_reward / (p_step + 1)}")
