@@ -15,8 +15,10 @@ DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=20
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-5
+ACTOR_LR=1e-6
+ACTOR_LR_MIN=1e-7
 CRITIC_LR=1e-3
+CRITIC_LR_MIN=1e-5
 ENCODER_LR=1e-4
 ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
@@ -25,18 +27,18 @@ BASIC_BIAS=1e-8
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
 CONSISTENCY_REWARD=.2
-PANELTY=-1
+PANELTY=-0.5
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
-EPOCH_NUM=1000
-LOAD_MODEL=True
-SWAP_NUM=[2,3,3,4]
-MAX_STEP=[200,300,300,300]
-MODEL_NAME="(5).pth"
+EPOCH_NUM=500
+LOAD_MODEL=False
+SWAP_NUM=[4,2,8,8]
+MAX_STEP=[400,200,400,400]
+MODEL_NAME="(6).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
-BATCH_SIZE=30
+BATCH_SIZE=20
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -187,10 +189,10 @@ class actor_model(nn.Module):
 
 
     def forward(self,image,outsider_piece):
-        fen_image=self.local_fen(image)
-        fen_outsider_piece=self.local_fen(outsider_piece)
-        image_tensor=self.image_embedding(fen_image)
-        outsider_tensor=self.outsider_embedding(fen_outsider_piece)
+        image=self.local_fen(image)
+        outsider_piece=self.local_fen(outsider_piece)
+        image_tensor=self.image_embedding(image)
+        outsider_tensor=self.outsider_embedding(outsider_piece)
         transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
         transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
         for layer in self.encoder_layers:
@@ -211,6 +213,7 @@ class actor_model(nn.Module):
 class critic_model(nn.Module):
     def __init__(self,
                  picture_size,
+                 outsider_size,
                  patch_size,
                  encoder_layer_num,
                  n_head,
@@ -221,23 +224,48 @@ class critic_model(nn.Module):
                  critic_hidden,
                  dropout=0.1):
         super().__init__()
-        self.local_fen=Vit.VisionTransformer(
-            picture_size=picture_size,
-            patch_size=patch_size,
-            encoder_layer_num=encoder_layer_num,
-            n_head=n_head,
-            out_size=transformer_out_size,
-            output_channel=output_channel,
-            unet_hidden=unet_hidden,
-            encoder_hidden=encoder_hidden,
-            dropout=dropout
+        # self.local_fen=Vit.VisionTransformer(
+        #     picture_size=picture_size,
+        #     patch_size=patch_size,
+        #     encoder_layer_num=encoder_layer_num,
+        #     n_head=n_head,
+        #     out_size=transformer_out_size,
+        #     output_channel=output_channel,
+        #     unet_hidden=unet_hidden,
+        #     encoder_hidden=encoder_hidden,
+        #     dropout=dropout
+        # )
+        num_patches=(outsider_size[2]*outsider_size[3]//(patch_size**2)+picture_size[2]*picture_size[3]//(patch_size**2))
+        self.local_fen=Vit.UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
+        self.image_embedding=Vit.PictureEmbedding(picture_size=picture_size,patch_size=patch_size)
+        self.outsider_embedding=Vit.PictureEmbedding(picture_size=outsider_size,patch_size=patch_size)
+        self.positional_embedding=Vit.PositionalEmbedding(d_model=output_channel*(patch_size**2),num_patches=num_patches)
+        self.encoder_layers=nn.ModuleList(
+            [
+                Vit.EncoderLayer((patch_size**2)*picture_size[1],encoder_hidden,n_head)
+                for _ in range(encoder_layer_num)
+            ]
         )
+        self.transformer_fc=nn.Linear(output_channel*(patch_size**2),1)
+        self.fc=nn.Linear(num_patches,transformer_out_size)
+        # self.local_fen.local_fen=nn.Identity()
         self.fc1=nn.Linear(transformer_out_size,critic_hidden)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(dropout)
         self.fc2=nn.Linear(critic_hidden,1)
-    def forward(self,image):
-        transformer_output=self.local_fen(image)
+    def forward(self,image,outsider_piece):
+        # transformer_output=self.local_fen(image)
+        image=self.local_fen(image)
+        outsider_piece=self.local_fen(outsider_piece)
+        image_tensor=self.image_embedding(image)
+        outsider_tensor=self.outsider_embedding(outsider_piece)
+        transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
+        transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
+        for layer in self.encoder_layers:
+            transformer_feature_tensor=layer(transformer_feature_tensor)
+        feature_tensor=self.transformer_fc(transformer_feature_tensor)
+        feature_tensor=feature_tensor.squeeze()
+        transformer_output=self.fc(feature_tensor)
         x=self.fc1(transformer_output)
         x=self.relu(x)
         x=self.dropout(x)
@@ -432,6 +460,7 @@ class env:
         for i in range(swap_num):
             action_index=random.randint(0,len(initial_permutation)*(len(initial_permutation)-1)//2-1)
             initial_permutation=self.permute(initial_permutation,action_index)
+        print(f"Initial permutation {initial_permutation}")
         return initial_permutation
 
     def recording_memory(self,image_id,state_list,action_list,reward_list,next_state_list,do_list,done_list):
@@ -502,13 +531,14 @@ class env:
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
             entropy = torch.distributions.Categorical(probs).entropy()
-            next_state_tensor=torch.cat(next_states)
-            pred_next_ret=self.critic_model(next_state_tensor)
-            pred_ret=self.critic_model(state_tensor)
+            # next_state_tensor=torch.cat(next_states)
+            # pred_next_ret=self.critic_model(next_state_tensor)
+            pred_ret=self.critic_model(state_tensor,outsider_tensor)
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
             done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
+            # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
+            critic_loss=nn.functional.mse_loss(pred_ret,ret)
             advantage=ret-pred_ret.detach()
             actor_loss=-(log_probs*advantage).mean()-entropy.mean()*self.entropy_weight
 
@@ -600,14 +630,17 @@ class env:
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list))]}")
             print(f"Action_list: {self.action_list}")
+            print(f"Permutation list: {permutation_list}")
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
             self.update()
 
             torch.save(self.critic_model.state_dict(), CRITIC_PATH)
-            self.critic_schedular.step()
+            if self.critic_optimizer.state_dict()["param_groups"][0]["lr"]>CRITIC_LR_MIN:
+                self.critic_schedular.step()
             torch.save(self.actor_model.state_dict(),ACTOR_PATH)
-            self.actor_schedular.step()
+            if self.actor_optimizer.state_dict()["param_groups"][0]["lr"]>ACTOR_LR_MIN:
+                self.actor_schedular.step()
 
 
 
@@ -621,24 +654,25 @@ if __name__ == "__main__":
     # actor=actor_model(hidden_size1=512,hidden_size2=256,outsider_hidden_size=256,action_num=46).to(DEVICE)
 
     critic=critic_model(picture_size=[1,3,288,288],
+                        outsider_size=[1,3,96,96],
                         patch_size=16,
-                        encoder_hidden=512,
+                        encoder_hidden=1024,
                         n_head=16,
                         unet_hidden=1024,
-                        encoder_layer_num=2,
-                        critic_hidden=512,
+                        encoder_layer_num=4,
+                        critic_hidden=1024,
                         output_channel=3,
-                        transformer_out_size=512).to(DEVICE)
+                        transformer_out_size=1024).to(DEVICE)
     actor=actor_model(picture_size=[1,3,288,288],
                       outsider_size=[1,3,96,96],
                       patch_size=16,
-                      encoder_layer_num=2,
+                      encoder_layer_num=4,
                       n_head=16,
-                      transformer_output_size=512,
+                      transformer_output_size=1024,
                       unet_hidden=1024,
-                      encoder_hidden=512,
+                      encoder_hidden=1024,
                       output_channel=3,
-                      actor_hidden=512,
+                      actor_hidden=1024,
                       action_num=46).to(DEVICE)
 
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
