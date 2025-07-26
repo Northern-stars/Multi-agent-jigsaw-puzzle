@@ -25,6 +25,8 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
+
+
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
 CONSISTENCY_REWARD=.2
@@ -32,6 +34,7 @@ PANELTY=-0.5
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
+
 EPOCH_NUM=500
 LOAD_MODEL=False
 SWAP_NUM=[4,2,8,8]
@@ -39,10 +42,12 @@ MAX_STEP=[400,200,400,400]
 MODEL_NAME="(5).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
+
 BATCH_SIZE=20
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
+AGENT_EPOCHS=10
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -102,15 +107,15 @@ class actor_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
         super(actor_model,self).__init__()
         self.image_fen_model=fen_model(hidden_size1,hidden_size1)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Actor missing keys hori",load_result_hori.missing_keys)
-        print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Actor missing keys hori",load_result_hori.missing_keys)
+        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
@@ -135,15 +140,15 @@ class critic_model(nn.Module):
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Critic missing keys hori",load_result_hori.missing_keys)
-        print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Critic missing keys hori",load_result_hori.missing_keys)
+        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
@@ -296,8 +301,8 @@ class env:
                  entropy_weight,
                  epsilon,
                  epsilon_gamma,
-                 piece_num=9
-                 
+                 piece_num=9,
+                 epochs=10
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -324,6 +329,7 @@ class env:
         self.entropy_weight=entropy_weight
         self.epsilon=epsilon
         self.epsilon_gamma=epsilon_gamma
+        self.epochs=epochs
 
     
     def load_image(self,image_num,id=[]):
@@ -470,8 +476,8 @@ class env:
         print(f"Initial permutation {initial_permutation}")
         return initial_permutation
 
-    def recording_memory(self,image_id,state_list,action_list,reward_list,next_state_list,do_list,done_list):
-        memory={"Image_id":image_id,"State_list":state_list,"Action_list": action_list,"Reward_list":reward_list,"Next_state_list":next_state_list,"Do_list":do_list,"Done_list": done_list}
+    def recording_memory(self,image_id,state_list,log_probs,action_list,reward_list,next_state_list,do_list,done_list):
+        memory={"Image_id":image_id,"State_list":state_list,"Log_probs":log_probs,"Action_list": action_list,"Reward_list":reward_list,"Next_state_list":next_state_list,"Do_list":do_list,"Done_list": done_list}
         if len(self.mkv_memory)<self.mkv_memory_size:
             self.mkv_memory.append(memory)
         else:
@@ -480,26 +486,42 @@ class env:
 
         
     def update(self):
+        eps=0.2
         #Calculating return
         i=(self.memory_counter-1)%self.mkv_memory_size
         
         R=[0 for _ in range(self.image_num)]
+        R_start=[True for _ in range(self.image_num)]
+        R_track=[[] for _ in range(self.image_num)]
+        self.critic_model.eval()
         while i!=(self.trace_start_point-1)%self.mkv_memory_size:
             do_list=self.mkv_memory[i]["Do_list"]
             done_list=self.mkv_memory[i]["Done_list"]
             reward_list=self.mkv_memory[i]["Reward_list"]
             for j in range(len(do_list)):
-                R[do_list[j]]=self.gamma*R[do_list[j]]*(1-done_list[j])+reward_list[j]
+                if R_start[do_list[j]]:
+                    R_start[do_list[j]]=False
+                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j])
+                    value=self.critic_model(current_image,current_outsider)
+                    R[do_list[j]]=value.item()
+                else:
+                    R[do_list[j]]=self.gamma*R[do_list[j]]*(1-done_list[j])+reward_list[j]
+                R_track[do_list[j]].append(R[do_list[j]])
             self.mkv_memory[i]["Return_list"]=R.copy()
             i=(i-1)%self.mkv_memory_size
+        i=(self.memory_counter-1)%self.mkv_memory_size
+        R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
+        while i!=(self.trace_start_point-1)%self.mkv_memory_size:
+            self.mkv_memory[i]["Return_list"]=[self.mkv_memory[i]["Return_list"][j]/R_track[j] for j in range(self.image_num)]
+            i=(i-1)%self.mkv_memory_size
+
         
-        #Train with the whole memory
         order=list(range(len(self.mkv_memory)))
         random.shuffle(order)
         self.actor_model.train()
         self.critic_model.train()
         critic_loss_sum=0
-        for i in range(0,len(order),self.batch_size):
+        for i in range(self.epochs):
             if len(order)-i<self.batch_size:
                 sample_dicts=[self.mkv_memory[j] for j in order[i:]]
             else:
@@ -512,7 +534,7 @@ class env:
             next_states=[]
             reward=[]
             done=[]
-            
+            old_log_probs=[]
             
             for a in range(len(sample_dicts)):
                 self.load_image(image_num=self.image_num,id=self.mkv_memory[a]["Image_id"])
@@ -522,6 +544,7 @@ class env:
                     current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b])
                     states.append(current_image)
                     outsider_pieces.append(current_outsider)
+                    old_log_probs.append(self.mkv_memory[a]["Log_probs"][b])
                     actions.append(self.mkv_memory[a]["Action_list"][b])
                     next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b])
                     next_states.append(next_image)
@@ -533,22 +556,30 @@ class env:
             
             state_tensor=torch.cat(states,dim=0)
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
+
             probs=self.actor_model(state_tensor,outsider_tensor)
+            
             action_tensor=torch.tensor(actions).to(self.device).unsqueeze(-1)
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
+            old_log_probs=torch.cat(old_log_probs,dim=0)
             entropy = torch.distributions.Categorical(probs).entropy()
+            
             # next_state_tensor=torch.cat(next_states)
             # pred_next_ret=self.critic_model(next_state_tensor)
             pred_ret=self.critic_model(state_tensor,outsider_tensor)
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
             done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
-            critic_loss=nn.functional.mse_loss(pred_ret,ret)
-            advantage=ret-pred_ret.detach()
-            actor_loss=-(log_probs*advantage).mean()-entropy.mean()*self.entropy_weight
 
+            advantage=ret-pred_ret.detach()
+
+
+            ratio=torch.exp(log_probs-old_log_probs)
+            actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
+            critic_loss=nn.functional.mse_loss(pred_ret,ret)
+            # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
+            
             critic_loss_sum+=critic_loss.item()
 
             
@@ -571,6 +602,8 @@ class env:
         torch.save(self.actor_model.state_dict(),ACTOR_PATH)
         if self.actor_optimizer.state_dict()["param_groups"][0]["lr"]>ACTOR_LR_MIN:
             self.actor_schedular.step()
+
+
 
     def step(self, epoch=500, load=True):
 
@@ -608,6 +641,7 @@ class env:
                 state_list=[]
                 do_list = []
                 model_action=[]
+                log_probs=[]
                 last_reward_list,done_list=self.get_reward(permutation_list=permutation_list)
                 with torch.no_grad():
                     self.actor_model.eval()
@@ -622,8 +656,11 @@ class env:
 
                         probs = self.actor_model(image, outsider)
                         dist  = torch.distributions.Categorical(probs)
+                        
+
                         action = dist.sample()
                         # action=self.epsilon_greedy(action=action.item())
+                        log_probs.append(dist.log_prob(action).detach())
                         action=action.item()
                         model_action.append(action)
                         self.action_list[j][action]+=1
@@ -639,7 +676,7 @@ class env:
                 for j in do_list:
                     reward_sum_list[j].append(reward_list[j])
                 if state_list:
-                    self.recording_memory(image_id=self.image_id,state_list=state_list,action_list=model_action,reward_list=[reward_list[j]-last_reward_list[j] for j in do_list],next_state_list=[permutation_list[j] for j in do_list ],do_list=do_list,done_list=[done_list[j] for j in do_list])
+                    self.recording_memory(image_id=self.image_id,state_list=state_list,log_probs=log_probs,action_list=model_action,reward_list=[reward_list[j]-last_reward_list[j] for j in do_list],next_state_list=[permutation_list[j] for j in do_list ],do_list=do_list,done_list=[done_list[j] for j in do_list])
                 done = all(done_list)
                 step += 1
 
@@ -649,7 +686,7 @@ class env:
             print(f"Permutation list: {permutation_list}")
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
-            if len(self.mkv_memory)>0:
+            if self.mkv_memory!=[]:
                 print("Start training")
                 self.update()
 

@@ -9,10 +9,11 @@ import math
 import copy
 import torch
 import itertools
+from torchvision.models import efficientnet_b0 
 from colorama import init, Fore, Back, Style
 
 from torch import nn
-from pretrain import fen_model
+# from pretrain import fen_model
 from torch.utils.tensorboard import SummaryWriter
 
 # color print
@@ -309,7 +310,28 @@ class Puzzle_Env(object):
             fragment_list[i] = self.initial_fragment_list[self.index_list[i]]
         return fragment_list
     
+class fen_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2):
+        super().__init__()
+        self.pre_model=efficientnet_b0()
+        self.pre_model.classifier=nn.Sequential([
+            nn.Linear(1280,hidden_size1),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        ])
+        self.fc1=nn.Linear(2*hidden_size1,hidden_size2)
+        self.relu=nn.ReLU()
+        self.dropout=nn.Dropout(0.1)
 
+    
+    def forward(self,picture1,picture2):
+        picture1=self.pre_model(picture1)
+        picture2=self.pre_model(picture2)
+        
+        feature_tensor=torch.cat([picture1,picture2],dim=-1)
+        out=self.fc1(feature_tensor)
+
+        return out
 
 
 #Model structure
@@ -320,26 +342,26 @@ class dqn_model(nn.Module):
         self.FEN_hori=fen_model(512,512)
         self.FEN_vert=fen_model(512,512)
 
-        state_dict=torch.load("hori_ef0.pth")
-        hori_state_dict = {
-        k.replace("pre_model.", ""): v 
-        for k, v in state_dict.items() 
-        if k.startswith("pre_model.")
-        }
-        # hori_state_dict=state_dict
-        load_result_hori=self.FEN_hori.load_state_dict(hori_state_dict,strict=False)
-        print("missing keys hori",load_result_hori.missing_keys)
-        print("unexpected keys hori",load_result_hori.unexpected_keys)
+        # state_dict=torch.load("hori_ef0.pth")
+        # hori_state_dict = {
+        # k.replace("pre_model.", ""): v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("pre_model.")
+        # }
+        # # hori_state_dict=state_dict
+        # load_result_hori=self.FEN_hori.load_state_dict(hori_state_dict,strict=False)
+        # print("missing keys hori",load_result_hori.missing_keys)
+        # print("unexpected keys hori",load_result_hori.unexpected_keys)
         
-        state_dict=torch.load("vert_ef0.pth")
-        vert_state_dict = {
-        k.replace("pre_model.", ""): v 
-        for k, v in state_dict.items() 
-        if k.startswith("pre_model.")
-        }
-        load_result_vert=self.FEN_vert.load_state_dict(vert_state_dict,strict=False)
-        print("missing keys vert",load_result_vert.missing_keys)
-        print("unexpected keys vert",load_result_vert.unexpected_keys)
+        # state_dict=torch.load("vert_ef0.pth")
+        # vert_state_dict = {
+        # k.replace("pre_model.", ""): v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("pre_model.")
+        # }
+        # load_result_vert=self.FEN_vert.load_state_dict(vert_state_dict,strict=False)
+        # print("missing keys vert",load_result_vert.missing_keys)
+        # print("unexpected keys vert",load_result_vert.unexpected_keys)
 
 
         self.fc_0=nn.Linear(512,128)
