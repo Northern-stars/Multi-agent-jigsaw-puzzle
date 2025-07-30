@@ -10,14 +10,15 @@ from torch.utils.data import Dataset,DataLoader
 import cv2
 import Vit
 import os
+import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=20
-GAMMA=0.9
+GAMMA=0.998
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-6
-ACTOR_LR_MIN=1e-7
+ACTOR_LR=1e-5
+ACTOR_LR_MIN=1e-6
 CRITIC_LR=1e-3
 CRITIC_LR_MIN=1e-5
 ENCODER_LR=1e-4
@@ -25,6 +26,7 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
+SHOW_IMAGE=True
 
 
 PAIR_WISE_REWARD=.2
@@ -35,15 +37,15 @@ ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
-EPOCH_NUM=500
+EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[4,2,8,8]
-MAX_STEP=[400,200,400,400]
-MODEL_NAME="(5).pth"
+SWAP_NUM=[4,8,8,8]
+MAX_STEP=[400,400,400,400]
+MODEL_NAME="(7).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
 
-BATCH_SIZE=20
+BATCH_SIZE=18
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -95,7 +97,7 @@ class fen_model(nn.Module):
         x=self.do(feature_tensor)
         x=self.fc1(x)
         x=self.do(x)
-        x=self.bn(x)
+        # x=self.bn(x)
         x=self.relu(x)
         x=self.fc2(x)
         return x
@@ -370,10 +372,12 @@ class env:
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
             self.permutation2piece[-1]=torch.zeros(3,96,96)
         
-    def get_image(self,permutation):
+    def get_image(self,permutation,image_id):
         image=torch.zeros(3,288,288)
+        final_permutation=copy.deepcopy(permutation)
+        final_permutation.insert(9//2,image_id*9+9//2)
         for i in range(9):
-            image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=self.permutation2piece[permutation[i]]
+            image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=self.permutation2piece[final_permutation[i]]
     
         outsider_piece=self.permutation2piece[permutation[-1]]
         return image.unsqueeze(0).to(self.device),outsider_piece.unsqueeze(0).to(self.device)
@@ -381,35 +385,38 @@ class env:
     def get_reward(self,permutation_list):
 
         # permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
-        
-        done_list=[0 for i in range(len(permutation_list))]
-        reward_list=[0 for i in range(len(permutation_list))]
-        edge_length=int(len(permutation_list[0])**0.5)
-        piece_num=len(permutation_list[0])
+        permutation_copy=copy.deepcopy(permutation_list)
+        for i in range(len(permutation_list)):
+            permutation_copy[i].insert(9//2,i*9+9//2)
+        done_list=[0 for i in range(len(permutation_copy))]
+        reward_list=[0 for i in range(len(permutation_copy))]
+        edge_length=int(len(permutation_copy[0])**0.5)
+        piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
         vert_set=[(i,i+edge_length) for i in range(edge_length*2)]
+        
         for i in range(len(permutation_list)):
-            
             for j in range(len(hori_set)):#Pair reward
-                hori_pair_set=(permutation_list[i][hori_set[j][0]],permutation_list[i][hori_set[j][1]])
-                vert_pair_set=(permutation_list[i][vert_set[j][0]],permutation_list[i][vert_set[j][1]])
+                hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
+                vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
                 if -1 not in hori_pair_set and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set:
                     reward_list[i]+=1*PAIR_WISE_REWARD
                 if -1 not in vert_pair_set and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set:
                     reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
+            # print(piece_range)
         
             for j in range(piece_num):
-                if permutation_list[i][j]!=-1:
-                    piece_range[permutation_list[i][j]//piece_num]+=1
-                reward_list[i]+=(permutation_list[i][j]%piece_num==j)*CATE_REWARD#Category reward
+                if permutation_copy[i][j]!=-1:
+                    piece_range[permutation_copy[i][j]//piece_num]+=1
+                reward_list[i]+=(permutation_copy[i][j]%piece_num==j)*CATE_REWARD#Category reward
             
             
             max_piece=max(piece_range)#Consistancy reward
 
             weight=0.2
-            if -1 in permutation_list[i]:
+            if -1 in permutation_copy[i]:
                 weight+=0.5*CONSISTENCY_REWARD
             if max_piece==piece_num-3:
                 weight+=1*CONSISTENCY_REWARD
@@ -422,8 +429,8 @@ class env:
 
             reward_list[i]*=weight
             reward_list[i]+=PANELTY
-            start_index=min(permutation_list[i])//piece_num*piece_num#Done reward
-            if permutation_list[i]==list(range(start_index,start_index+piece_num)):
+            start_index=min(permutation_copy[i])//piece_num*piece_num#Done reward
+            if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
                 reward_list[i]=DONE_REWARD
         return reward_list,done_list
@@ -436,11 +443,14 @@ class env:
 
     def show_image(self,image_permutation_list):
         for i in range(self.image_num):
-            image,_=self.get_image(permutation=image_permutation_list[i])
-            image=image.permute([1,2,0]).numpy()
+
+            image,_=self.get_image(permutation=image_permutation_list[i],image_id=i)
+            image=image.squeeze().to("cpu")
+            image=image.permute([1,2,0]).numpy().astype(np.uint8)
             cv2.imshow(f"Final image {i}",image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+        # time.sleep(10)
+        # cv2.destroyAllWindows()
     
     def epsilon_greedy(self,action):
         prob=random.random()
@@ -470,6 +480,8 @@ class env:
             self.load_image(image_num=self.image_num)
         print(f"Episode image:{self.image_id}")
         initial_permutation=list(range(self.piece_num*self.image_num))
+        for i in range(self.image_num):
+            initial_permutation.pop(9*i+9//2-i)
         for i in range(swap_num):
             action_index=random.randint(0,len(initial_permutation)*(len(initial_permutation)-1)//2-1)
             initial_permutation=self.permute(initial_permutation,action_index)
@@ -501,7 +513,7 @@ class env:
             for j in range(len(do_list)):
                 if R_start[do_list[j]]:
                     R_start[do_list[j]]=False
-                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j])
+                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j],image_id=do_list[j])
                     value=self.critic_model(current_image,current_outsider)
                     R[do_list[j]]=value.item()
                 else:
@@ -522,10 +534,12 @@ class env:
         self.critic_model.train()
         critic_loss_sum=0
         for i in range(self.epochs):
-            if len(order)-i<self.batch_size:
-                sample_dicts=[self.mkv_memory[j] for j in order[i:]]
+            if i*self.batch_size>=len(order):
+                break
+            if len(order)-i*self.batch_size<self.batch_size:
+                sample_dicts=[self.mkv_memory[j] for j in order[i*self.batch_size:]]
             else:
-                sample_dicts=[self.mkv_memory[j] for j in order[i:i+self.batch_size]]
+                sample_dicts=[self.mkv_memory[j] for j in order[i*self.batch_size:(i+1)*self.batch_size]]
             
             states=[]
             outsider_pieces=[]
@@ -541,12 +555,12 @@ class env:
                 do_list=self.mkv_memory[a]["Do_list"]
                 for b in range(len(do_list)):
                     
-                    current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b])
+                    current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b],image_id=b)
                     states.append(current_image)
                     outsider_pieces.append(current_outsider)
                     old_log_probs.append(self.mkv_memory[a]["Log_probs"][b])
                     actions.append(self.mkv_memory[a]["Action_list"][b])
-                    next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b])
+                    next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b],image_id=b)
                     next_states.append(next_image)
                     ret.append(self.mkv_memory[a]["Return_list"][do_list[b]])
                     reward.append(self.mkv_memory[a]["Reward_list"][b])
@@ -616,7 +630,7 @@ class env:
         for i in range(epoch):
             self.clean_memory()
             if i > 300:
-                max_step, swap_num = MAX_STEP[3], SWAP_NUM[0]
+                max_step, swap_num = MAX_STEP[3], SWAP_NUM[3]
             elif i > 200:
                 max_step, swap_num = MAX_STEP[2], SWAP_NUM[2]
             elif i > 100:
@@ -631,6 +645,7 @@ class env:
             buffer               = [-1] * self.buffer_size
             done_list            = [False] * self.image_num
             reward_sum_list      = [[] for _ in range(self.image_num)]
+            termination_list     = [False for _ in range(self.image_num)]
 
             self.action_list=[[0 for _ in range((self.piece_num+self.buffer_size)*self.piece_num//2+1)] for __ in range(self.image_num)]
             self.trace_start_point=self.memory_counter
@@ -642,37 +657,45 @@ class env:
                 do_list = []
                 model_action=[]
                 log_probs=[]
-                last_reward_list,done_list=self.get_reward(permutation_list=permutation_list)
+                last_reward_list,_=self.get_reward(permutation_list=permutation_list)
                 with torch.no_grad():
                     self.actor_model.eval()
                     
                     for j in range(self.image_num):
-                        if done_list[j]:           
+                        if done_list[j] or termination_list[j]:           
                             continue
                         
                         perm_with_buf = permutation_list[j] + buffer
                         state_list.append(copy.deepcopy(perm_with_buf))
-                        image, outsider = self.get_image(perm_with_buf)
+                        image, outsider = self.get_image(perm_with_buf,image_id=j)
 
                         probs = self.actor_model(image, outsider)
                         dist  = torch.distributions.Categorical(probs)
                         
 
                         action = dist.sample()
+                        
                         # action=self.epsilon_greedy(action=action.item())
                         log_probs.append(dist.log_prob(action).detach())
                         action=action.item()
                         model_action.append(action)
                         self.action_list[j][action]+=1
+                        do_list.append(j)
+
+                        if action==37:
+                            termination_list[j]=True
+                            continue
 
                         new_perm = self.permute(perm_with_buf, action)
-                        permutation_list[j], buffer = new_perm[:self.piece_num], new_perm[self.piece_num:]
+                        permutation_list[j], buffer = new_perm[:self.piece_num-1], new_perm[self.piece_num-1:]
 
-                        do_list.append(j)
+                        
 
 
 
                 reward_list, done_list = self.get_reward(permutation_list)
+                if SHOW_IMAGE:
+                    self.show_image(permutation_list)
                 for j in do_list:
                     reward_sum_list[j].append(reward_list[j])
                 if state_list:
@@ -684,6 +707,10 @@ class env:
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
             print(f"Action_list: {self.action_list}")
             print(f"Permutation list: {permutation_list}")
+            action_num=[sum([1 if action!=0 else 0 for action in self.action_list[j]]) for j in range(self.image_num)]
+            for j in range(self.image_num):
+                if action_num[j]<=5:
+                    self.epsilon/=(EPSILON_GAMMA**10)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
             if self.mkv_memory!=[]:
@@ -701,7 +728,7 @@ if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
     critic=critic_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
-    actor=actor_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256,action_num=46).to(DEVICE)
+    actor=actor_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256,action_num=37).to(DEVICE)
 
     # critic=critic_model(picture_size=[1,3,288,288],
     #                     outsider_size=[1,3,96,96],
@@ -735,12 +762,14 @@ if __name__ == "__main__":
                     actor_model=actor,
                     critic_model=critic,
                     # encoder=feature_encoder,
-                    image_num=2,
+                    image_num=1,
                     buffer_size=1,
                     epsilon=EPSILON,
                     epsilon_gamma=EPSILON_GAMMA,
                    entropy_weight=ENTROPY_WEIGHT)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
+    # environment.load_image(1,id=[1000])
+    # environment.show_image([[0,1,2,3,4,5,6,7,8]])
     # reward_list,done_list=environment.get_reward([[0,1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15,16,17]])
     # print(reward_list,done_list)
     
