@@ -106,11 +106,16 @@ class UNet(nn.Module):
 class PositionalEmbedding(nn.Module):
     def __init__(self,d_model,num_patches):
         super(PositionalEmbedding,self).__init__()
-        self.position_embedding_code=nn.Parameter(torch.randn(1,num_patches,d_model))
+        
+        self.length=num_patches+1
+        self.position_embedding_code=nn.Parameter(torch.randn(1,self.length,d_model))
+        nn.init.normal_(self.position_embedding_code)
     
     def forward(self,x):
-        output=x+self.position_embedding_code
-        return output
+        for i in range(9):
+            x[:,self.length*i:self.length*(i+1),:]+=i+self.position_embedding_code
+        # x=x+self.position_embedding_code
+        return x
 
 class PictureEmbedding(nn.Module):
     def __init__(self,picture_size,patch_size):
@@ -120,13 +125,18 @@ class PictureEmbedding(nn.Module):
         self.channel_num=picture_size[1]
         self.batch_size=picture_size[0]
         self.patch_size=patch_size
+        self.class_token=nn.Parameter(torch.randn(1,1,self.channel_num*patch_size**2))
+        nn.init.normal_(self.class_token)
 
     def forward(self,x):
         with torch.no_grad():
             # print(x.size())
+            batch_size=x.size(0)
             assert self.width % self.patch_size == 0 and self.height % self.patch_size == 0
             patches=F.unfold(x,kernel_size=self.patch_size,stride=self.patch_size)
             patched_image=patches.permute(0,2,1)
+            class_token=self.class_token.repeat(batch_size,1,1)
+            patched_image=torch.cat([patched_image,class_token],dim=1)
         return patched_image
 
 class PictureEncoding(nn.Module):
@@ -256,18 +266,17 @@ class VisionTransformer(nn.Module):
                  encoder_hidden,
                  dropout=0.1):
         super().__init__()
-        self.local_fen=UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
+        # self.local_fen=UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
         self.encoder=Encoder(picture_size=picture_size,patch_size=patch_size,channel=output_channel,hidden=encoder_hidden,n_layer=encoder_layer_num,n_head=n_head,dropout=dropout)
-        self.fc1=nn.Linear(output_channel*(patch_size**2),1)
-        self.out_layer=nn.Linear(picture_size[2]*picture_size[3]//(patch_size**2),out_size)
+        self.out_layer=nn.Linear(output_channel*(patch_size**2),out_size)
 
     
     def forward(self,x):
 
-        x=self.local_fen(x)
+        # x=self.local_fen(x)
         x=self.encoder(x)
-        x=self.fc1(x)
-        x=x.squeeze()
+        x=x[:,-1,:]
+
         out=self.out_layer(x)
         return out
 
