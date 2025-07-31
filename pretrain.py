@@ -10,16 +10,17 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
+import Vit
 
 
 
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
-test_x_path = 'dataset/train_img_48gap_33-001.npy'
-test_y_path = 'dataset/train_label_48gap_33.npy'
-# test_x_path = 'dataset/test_img_48gap_33.npy'
-# test_y_path = 'dataset/test_label_48gap_33.npy'
+# test_x_path = 'dataset/train_img_48gap_33-001.npy'
+# test_y_path = 'dataset/train_label_48gap_33.npy'
+test_x_path = 'dataset/test_img_48gap_33.npy'
+test_y_path = 'dataset/test_label_48gap_33.npy'
 # test_x_path = 'dataset/valid_img_48gap_33.npy'
 # test_y_path = 'dataset/valid_label_48gap_33.npy'
 
@@ -31,7 +32,7 @@ test_y=np.load(test_y_path)
 
 HORI_MODEL_NAME="hori_ef0.pth"
 VERT_MODEL_NAME="vert_ef0.pth"
-BATCH_SIZE=128
+BATCH_SIZE=150
 
 class imageData(Dataset):
     def __init__(self,data,label):
@@ -121,8 +122,18 @@ device="cuda" if torch.cuda.is_available() else "cpu"
 class pretrain_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(pretrain_model,self).__init__()
-        self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,hidden_size1)
+        # self.ef=efficientnet_b0(weights="DEFAULT")
+        # self.ef.classifier=nn.Linear(1280,hidden_size1)
+        self.ef=Vit.VisionTransformer(
+        picture_size=[5,3,96,96],
+        patch_size=12,
+        encoder_hidden=hidden_size1,
+        out_size=hidden_size1,
+        n_head=12,
+        encoder_layer_num=12,
+        unet_hidden=hidden_size1,
+        output_channel=3
+        )
         self.fc1=nn.Linear(2*hidden_size1,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
@@ -199,6 +210,6 @@ def test():
 if __name__=="__main__":
     # HORI_MODEL_NAME="hori_ef0.pth"
     # VERT_MODEL_NAME="vert_ef0.pth"
-    MODEL_NAME="pairwise_pretrain.pth"
-    # train(50,load=True)
+    MODEL_NAME="pairwise_pretrain_Vit.pth"
+    # train(50,load=False)
     test()

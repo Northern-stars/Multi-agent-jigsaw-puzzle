@@ -10,7 +10,7 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-
+from Vit import VisionTransformer
 
 
 
@@ -30,7 +30,7 @@ test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
 
-BATCH_SIZE=32
+BATCH_SIZE=25
 MODEL_NAME="outsider_model.pth"
 
 
@@ -76,12 +76,20 @@ class imageData(Dataset):
         random.shuffle(image_fragments)
         random.shuffle(outsider_image_fragments)
         # print(type(outsider_image_fragments))
-        image_fragments[label]=outsider_image_fragments[label]
+        # image_fragments[label]=outsider_image_fragments[label]
+        random_number=random.randint(0,4)
+        if random_number==0:
+            return image,random_number
         image=torch.zeros(3,288,288)
+        for i in range(random_number):
+            random_index=random.randint(0,8)
+            image_fragments[random_index]=outsider_image_fragments[random_index]
+        
         for i in range(9):
             image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=image_fragments[i]
         
-        return image,label
+        # return image,label
+        return image,random_number
 
 
 train_data=imageData(train_x,train_y)
@@ -114,8 +122,8 @@ class fen_model(nn.Module):
             image[:,:,192:288,192:288]
         ]
         
-        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][0]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][0]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
+        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][1]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
+        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][1]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
         feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
         x=self.do(feature_tensor)
         x=self.fc1(x)
@@ -131,7 +139,17 @@ device="cuda" if torch.cuda.is_available() else "cpu"
 class outsider_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(outsider_model,self).__init__()
-        self.pre_model=fen_model(hidden_size1,hidden_size2)
+        # self.pre_model=fen_model(hidden_size1,hidden_size2)
+        self.pre_model=VisionTransformer(
+        picture_size=[5,3,96,96],
+        patch_size=12,
+        encoder_hidden=hidden_size1,
+        out_size=hidden_size2,
+        n_head=12,
+        encoder_layer_num=12,
+        unet_hidden=hidden_size1,
+        output_channel=3
+        )
         self.fc1=nn.Linear(hidden_size2,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
@@ -139,9 +157,12 @@ class outsider_model(nn.Module):
         self.fc2=nn.Linear(hidden_size2,hidden_size2)
         self.bn2=nn.BatchNorm1d(hidden_size2)
         self.relu2=nn.ReLU()
-        self.outlayer=nn.Linear(hidden_size2,9)
+        # self.outlayer=nn.Linear(hidden_size2,9)
+        self.outlayer=nn.Linear(hidden_size2,5)
     def forward(self,x):
         x=self.pre_model(x)
+        if len(x.size())<2:
+            x=x.unsqueeze(0)
         x=self.fc1(x)
         x=self.bn1(x)
         x=self.relu1(x)
@@ -154,7 +175,7 @@ class outsider_model(nn.Module):
 
 
 
-model=outsider_model(256,256).to(device)
+model=outsider_model(1024,1024).to(device)
 
 
 
@@ -233,7 +254,7 @@ class test_imageData(Dataset):
         
         return image,label
 
-test_data=test_imageData(test_x,test_y)
+test_data=imageData(test_x,test_y)
 test_dataloader=DataLoader(test_data,batch_size=1,shuffle=True)
 def test():
     model.load_state_dict(torch.load(MODEL_NAME))
@@ -243,7 +264,7 @@ def test():
         for batch_num,(image,label) in enumerate(test_dataloader):
             image=image.to(device)
             y_pred=torch.argmax(model(image)).item()
-            right+=y_pred in label
+            right+=y_pred == label
         print(f"Accuracy: {right/len(test_dataloader)}")
 
 
@@ -252,5 +273,5 @@ def test():
 if __name__=="__main__":
     # HORI_MODEL_NAME="hori_ef0.pth"
     # VERT_MODEL_NAME="vert_ef0.pth"
-    train(50,load=False)
+    train(50,load=True)
     test()
