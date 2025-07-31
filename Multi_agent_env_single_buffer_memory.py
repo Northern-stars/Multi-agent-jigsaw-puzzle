@@ -90,7 +90,7 @@ class fen_model(nn.Module):
         x=self.do(feature_tensor)
         x=self.fc1(x)
         x=self.do(x)
-        x=self.bn(x)
+        # x=self.bn(x)
         x=self.relu(x)
         x=self.fc2(x)
         return x
@@ -102,15 +102,15 @@ class actor_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
         super(actor_model,self).__init__()
         self.image_fen_model=fen_model(hidden_size1,hidden_size1)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Actor missing keys hori",load_result_hori.missing_keys)
-        print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Actor missing keys hori",load_result_hori.missing_keys)
+        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
@@ -135,15 +135,15 @@ class critic_model(nn.Module):
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
-        state_dict=torch.load("pairwise_pretrain.pth")
-        state_dict_replace = {
-        k: v 
-        for k, v in state_dict.items() 
-        if k.startswith("ef.")
-        }
-        load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
-        print("Critic missing keys hori",load_result_hori.missing_keys)
-        print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Critic missing keys hori",load_result_hori.missing_keys)
+        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
@@ -387,9 +387,9 @@ class env:
             for j in range(len(hori_set)):#Pair reward
                 hori_pair_set=(permutation_list[i][hori_set[j][0]],permutation_list[i][hori_set[j][1]])
                 vert_pair_set=(permutation_list[i][vert_set[j][0]],permutation_list[i][vert_set[j][1]])
-                if -1 not in hori_pair_set and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set:
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
                     reward_list[i]+=1*PAIR_WISE_REWARD
-                if -1 not in vert_pair_set and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set:
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
                     reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
@@ -397,7 +397,7 @@ class env:
             for j in range(piece_num):
                 if permutation_list[i][j]!=-1:
                     piece_range[permutation_list[i][j]//piece_num]+=1
-                reward_list[i]+=(permutation_list[i][j]%piece_num==j)*CATE_REWARD#Category reward
+                    reward_list[i]+=(permutation_list[i][j]%piece_num==j and permutation_list[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
             
             max_piece=max(piece_range)#Consistancy reward
@@ -430,10 +430,13 @@ class env:
 
     def show_image(self,image_permutation_list):
         for i in range(self.image_num):
+
             image,_=self.get_image(permutation=image_permutation_list[i])
-            image=image.permute([1,2,0]).numpy()
+            image=image.squeeze().to("cpu")
+            image=image.permute([1,2,0]).numpy().astype(np.uint8)
             cv2.imshow(f"Final image {i}",image)
         cv2.waitKey(0)
+        # time.sleep(10)
         cv2.destroyAllWindows()
     
     def epsilon_greedy(self,action):
@@ -698,12 +701,14 @@ if __name__ == "__main__":
                     actor_model=actor,
                     critic_model=critic,
                     # encoder=feature_encoder,
-                    image_num=2,
+                    image_num=1,
                     buffer_size=1,
                     epsilon=EPSILON,
                     epsilon_gamma=EPSILON_GAMMA,
                    entropy_weight=ENTROPY_WEIGHT)
-    environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
+    # environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
+    environment.load_image(1,id=[1000])
+    environment.show_image([[0,2,1,3,7,4,6,5,8]])
     # reward_list,done_list=environment.get_reward([[0,1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15,16,17]])
     # print(reward_list,done_list)
     
