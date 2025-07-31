@@ -107,7 +107,7 @@ class PositionalEmbedding(nn.Module):
     def __init__(self,d_model,num_patches):
         super(PositionalEmbedding,self).__init__()
         
-        self.length=num_patches+1
+        self.length=num_patches//9
         self.position_embedding_code=nn.Parameter(torch.randn(1,self.length,d_model))
         nn.init.normal_(self.position_embedding_code)
     
