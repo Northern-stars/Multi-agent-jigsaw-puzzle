@@ -38,7 +38,7 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=False
+LOAD_MODEL=True
 SWAP_NUM=[2,3,4,8]
 MAX_STEP=[400,400,400,400]
 MODEL_NAME="(7).pth"
@@ -325,16 +325,17 @@ class env:
         # permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
         permutation_copy=copy.deepcopy(permutation_list)
         for i in range(len(permutation_list)):
-            permutation_copy[i].insert(9//2,i*9+9//2)
+            permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
         done_list=[0 for i in range(len(permutation_copy))]
         reward_list=[0 for i in range(len(permutation_copy))]
         edge_length=int(len(permutation_copy[0])**0.5)
         piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
-        vert_set=[(i,i+edge_length) for i in range(edge_length*2)]
+        vert_set=[(i,i+edge_length) for i in range(piece_num-edge_length)]
         
         for i in range(len(permutation_list)):
             for j in range(len(hori_set)):#Pair reward
+
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
                 if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
@@ -351,7 +352,7 @@ class env:
                     reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
             
-            max_piece=max(piece_range)#Consistancy reward
+            max_piece=piece_range[i]#Consistancy reward
 
             weight=0.2
             if -1 in permutation_copy[i]:
@@ -522,7 +523,7 @@ class env:
             next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
 
             q_next=self.model(next_state_tensor,next_outsiders_tensor).detach()
-            q_eval=self.main_model(state_tensor,outsider_tensor)
+            q_eval=self.main_model(next_state_tensor,next_outsiders_tensor)
 
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
 
@@ -561,7 +562,7 @@ class env:
                 max_step, swap_num = MAX_STEP[0], SWAP_NUM[0]
 
             initial_perm = self.summon_permutation_list(swap_num=swap_num)
-            permutation_list = [initial_perm[j*self.piece_num:(j+1)*self.piece_num]
+            permutation_list = [initial_perm[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
             buffer = [-1] * self.buffer_size
             done_list = [False] * self.image_num
@@ -676,7 +677,7 @@ if __name__ == "__main__":
 
                     model=critic,
                     # encoder=feature_encoder,
-                    image_num=1,
+                    image_num=2,
                     buffer_size=1,
                     epsilon=EPSILON,
                     epsilon_gamma=EPSILON_GAMMA,
