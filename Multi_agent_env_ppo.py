@@ -14,13 +14,14 @@ import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=20
-GAMMA=0.998
+GAMMA=0.9
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
 ACTOR_LR=1e-5
 ACTOR_LR_MIN=1e-6
-CRITIC_LR=1e-3
+CRITIC_LR=1e-4
 CRITIC_LR_MIN=1e-5
+CRITIC_UPDATE_TIME=3
 ENCODER_LR=1e-4
 ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
@@ -32,15 +33,15 @@ SHOW_IMAGE=True
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
 CONSISTENCY_REWARD=.2
-PANELTY=-0.5
+PANELTY=-0.2
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=False
-SWAP_NUM=[4,8,8,8]
-MAX_STEP=[400,400,400,400]
+LOAD_MODEL=True
+SWAP_NUM=[1,2,4,8]
+MAX_STEP=[400,300,300,200]
 MODEL_NAME="(7).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
@@ -68,9 +69,10 @@ class fen_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(fen_model,self).__init__()
         self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,128)
-        
-        self.fc1=nn.Linear(128*24,hidden_size1)
+        self.ef.classifier=nn.Linear(1280,256)
+        self.contrast_fc_hori=nn.Linear(512,256)
+        self.contrast_fc_vert=nn.Linear(512,256)
+        self.fc1=nn.Linear(256*12,hidden_size1)
         self.relu=nn.ReLU()
         self.bn=nn.BatchNorm1d(hidden_size1)
         self.do=nn.Dropout1d(p=0.1)
@@ -91,8 +93,10 @@ class fen_model(nn.Module):
             image[:,:,192:288,192:288]
         ]
         
-        hori_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.hori_set[i][0]]),self.ef(image_fragments[self.hori_set[i][1]])],dim=-1) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([torch.cat([self.ef(image_fragments[self.vert_set[i][0]]),self.ef(image_fragments[self.vert_set[i][1]])],dim=-1) for i in range(len(self.vert_set))],dim=-1)
+        image_tensor=[self.ef(image_fragments[i]) for i in range(len(image_fragments))]
+
+        hori_tensor=torch.cat([self.contrast_fc_hori(torch.cat([image_tensor[self.hori_set[i][0]],image_tensor[self.hori_set[i][1]]],dim=-1)) for i in range(len(self.hori_set))],dim=-1)
+        vert_tensor=torch.cat([self.contrast_fc_vert(torch.cat([image_tensor[self.vert_set[i][0]],image_tensor[self.vert_set[i][1]]],dim=-1)) for i in range(len(self.vert_set))],dim=-1)
         feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
         x=self.do(feature_tensor)
         x=self.fc1(x)
@@ -120,15 +124,31 @@ class actor_model(nn.Module):
         # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
+        self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
         self.fc2=nn.Linear(hidden_size2,action_num)
     
     def forward(self,image,outsider_piece):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
         image_input=self.image_fen_model(image)
         outsider_input=self.outsider_fen_model(outsider_piece)
-        feature_tensor=torch.cat([image_input,outsider_input],dim=1)
+        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
+        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
+        outsider_tensor=self.outsider_fc(outsider_tensor)
+        feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
         out=self.relu(out)
         out=self.dropout(out)
@@ -142,6 +162,8 @@ class critic_model(nn.Module):
         self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
         self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
         self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
+        self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
         # state_dict=torch.load("pairwise_pretrain.pth")
         # state_dict_replace = {
         # k: v 
@@ -157,9 +179,23 @@ class critic_model(nn.Module):
         self.fc=nn.Linear(hidden_size2,1)
     
     def forward(self,image,outsider):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
         image_input=self.fen_model(image)
         outsider_input=self.outsider_fen_model(outsider)
-        feature_tensor=torch.cat([image_input,outsider_input],dim=1)
+        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
+        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
+        outsider_tensor=self.outsider_fc(outsider_tensor)
+        feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
         out=self.relu(out)
         out=self.dropout(out)
@@ -372,10 +408,10 @@ class env:
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
             self.permutation2piece[-1]=torch.zeros(3,96,96)
         
-    def get_image(self,permutation,image_id):
+    def get_image(self,permutation,image_index):
         image=torch.zeros(3,288,288)
         final_permutation=copy.deepcopy(permutation)
-        final_permutation.insert(9//2,image_id*9+9//2)
+        final_permutation.insert(9//2,image_index*9+9//2)
         for i in range(9):
             image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=self.permutation2piece[final_permutation[i]]
     
@@ -387,21 +423,22 @@ class env:
         # permutation_list=permutation_list[::][:len(permutation_list[0])-1]#Comment if the buffer is not after the permutation
         permutation_copy=copy.deepcopy(permutation_list)
         for i in range(len(permutation_list)):
-            permutation_copy[i].insert(9//2,i*9+9//2)
+            permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
         done_list=[0 for i in range(len(permutation_copy))]
         reward_list=[0 for i in range(len(permutation_copy))]
         edge_length=int(len(permutation_copy[0])**0.5)
         piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
-        vert_set=[(i,i+edge_length) for i in range(edge_length*2)]
+        vert_set=[(i,i+edge_length) for i in range(piece_num-edge_length)]
         
         for i in range(len(permutation_list)):
             for j in range(len(hori_set)):#Pair reward
+
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
-                if -1 not in hori_pair_set and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set:
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
                     reward_list[i]+=1*PAIR_WISE_REWARD
-                if -1 not in vert_pair_set and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set:
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
                     reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
@@ -410,10 +447,10 @@ class env:
             for j in range(piece_num):
                 if permutation_copy[i][j]!=-1:
                     piece_range[permutation_copy[i][j]//piece_num]+=1
-                reward_list[i]+=(permutation_copy[i][j]%piece_num==j)*CATE_REWARD#Category reward
+                    reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
             
-            max_piece=max(piece_range)#Consistancy reward
+            max_piece=piece_range[i]#Consistancy reward
 
             weight=0.2
             if -1 in permutation_copy[i]:
@@ -428,13 +465,12 @@ class env:
                 weight+=5*CONSISTENCY_REWARD
 
             reward_list[i]*=weight
-            reward_list[i]+=PANELTY
+
             start_index=min(permutation_copy[i])//piece_num*piece_num#Done reward
             if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
                 reward_list[i]=DONE_REWARD
         return reward_list,done_list
-        #Change after determined
     
 
     def clean_memory(self):
@@ -444,7 +480,7 @@ class env:
     def show_image(self,image_permutation_list):
         for i in range(self.image_num):
 
-            image,_=self.get_image(permutation=image_permutation_list[i],image_id=i)
+            image,_=self.get_image(permutation=image_permutation_list[i],image_index=i)
             image=image.squeeze().to("cpu")
             image=image.permute([1,2,0]).numpy().astype(np.uint8)
             cv2.imshow(f"Final image {i}",image)
@@ -513,11 +549,11 @@ class env:
             for j in range(len(do_list)):
                 if R_start[do_list[j]]:
                     R_start[do_list[j]]=False
-                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j],image_id=do_list[j])
+                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j],image_index=do_list[j])
                     value=self.critic_model(current_image,current_outsider)
                     R[do_list[j]]=value.item()
                 else:
-                    R[do_list[j]]=self.gamma*R[do_list[j]]*(1-done_list[j])+reward_list[j]
+                    R[do_list[j]]=self.gamma*R[do_list[j]]*(1-done_list[j])+reward_list[j]+PANELTY
                 R_track[do_list[j]].append(R[do_list[j]])
             self.mkv_memory[i]["Return_list"]=R.copy()
             i=(i-1)%self.mkv_memory_size
@@ -533,6 +569,7 @@ class env:
         self.actor_model.train()
         self.critic_model.train()
         critic_loss_sum=0
+        actor_loss_sum=0
         for i in range(self.epochs):
             if i*self.batch_size>=len(order):
                 break
@@ -555,12 +592,12 @@ class env:
                 do_list=self.mkv_memory[a]["Do_list"]
                 for b in range(len(do_list)):
                     
-                    current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b],image_id=b)
+                    current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b],image_index=b)
                     states.append(current_image)
                     outsider_pieces.append(current_outsider)
                     old_log_probs.append(self.mkv_memory[a]["Log_probs"][b])
                     actions.append(self.mkv_memory[a]["Action_list"][b])
-                    next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b],image_id=b)
+                    next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b],image_index=b)
                     next_states.append(next_image)
                     ret.append(self.mkv_memory[a]["Return_list"][do_list[b]])
                     reward.append(self.mkv_memory[a]["Reward_list"][b])
@@ -579,35 +616,42 @@ class env:
             old_log_probs=torch.cat(old_log_probs,dim=0)
             entropy = torch.distributions.Categorical(probs).entropy()
             
-            # next_state_tensor=torch.cat(next_states)
-            # pred_next_ret=self.critic_model(next_state_tensor)
-            pred_ret=self.critic_model(state_tensor,outsider_tensor)
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
 
+            for _ in range(CRITIC_UPDATE_TIME):
+                # reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
+                # done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
+                # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
+                pred_ret=self.critic_model(state_tensor,outsider_tensor)
+                critic_loss=nn.functional.mse_loss(pred_ret,ret)
+                critic_loss_sum+=critic_loss.item()
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                self.critic_optimizer.step()
+
+
+            pred_ret=self.critic_model(state_tensor,outsider_tensor)
+            
             advantage=ret-pred_ret.detach()
 
 
             ratio=torch.exp(log_probs-old_log_probs)
             actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
-            critic_loss=nn.functional.mse_loss(pred_ret,ret)
-            # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
-            
-            critic_loss_sum+=critic_loss.item()
 
-            
+            actor_loss_sum-=actor_loss.item()
+
             self.actor_optimizer.zero_grad()
-            self.critic_optimizer.zero_grad()
+            
             actor_loss.backward()
 
-            critic_loss.backward()
+            
 
             torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
 
-            self.critic_optimizer.step()
-        print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}")
+            
+
+        print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}. Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
         torch.save(self.critic_model.state_dict(), CRITIC_PATH)
@@ -645,10 +689,11 @@ class env:
             buffer               = [-1] * self.buffer_size
             done_list            = [False] * self.image_num
             reward_sum_list      = [[] for _ in range(self.image_num)]
-            termination_list     = [False for _ in range(self.image_num)]
+            termination_list     = [0 for _ in range(self.image_num)]
 
             self.action_list=[[0 for _ in range((self.piece_num+self.buffer_size)*self.piece_num//2+1)] for __ in range(self.image_num)]
             self.trace_start_point=self.memory_counter
+            last_action=[-1 for _ in range(self.image_num)]
 
 
             step = 0; done = False
@@ -662,18 +707,25 @@ class env:
                     self.actor_model.eval()
                     
                     for j in range(self.image_num):
-                        if done_list[j] or termination_list[j]:           
+                        if done_list[j] or termination_list[j]>20:           
                             continue
                         
                         perm_with_buf = permutation_list[j] + buffer
                         state_list.append(copy.deepcopy(perm_with_buf))
-                        image, outsider = self.get_image(perm_with_buf,image_id=j)
+                        image, outsider = self.get_image(perm_with_buf,image_index=j)
 
                         probs = self.actor_model(image, outsider)
                         dist  = torch.distributions.Categorical(probs)
                         
 
                         action = dist.sample()
+                        if last_action[j]==int(action.item()):
+                            termination_list[j]+=1
+                        else:
+                            termination_list[j]=0
+                            last_action[j]=int(action.item())
+
+
                         
                         # action=self.epsilon_greedy(action=action.item())
                         log_probs.append(dist.log_prob(action).detach())
@@ -682,9 +734,9 @@ class env:
                         self.action_list[j][action]+=1
                         do_list.append(j)
 
-                        if action==37:
-                            termination_list[j]=True
-                            continue
+                        # if action==36:
+                        #     termination_list[j]=True
+                        #     continue
 
                         new_perm = self.permute(perm_with_buf, action)
                         permutation_list[j], buffer = new_perm[:self.piece_num-1], new_perm[self.piece_num-1:]
@@ -707,9 +759,8 @@ class env:
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
             print(f"Action_list: {self.action_list}")
             print(f"Permutation list: {permutation_list}")
-            action_num=[sum([1 if action!=0 else 0 for action in self.action_list[j]]) for j in range(self.image_num)]
             for j in range(self.image_num):
-                if action_num[j]<=5:
+                if termination_list[j]>=20:
                     self.epsilon/=(EPSILON_GAMMA**10)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
@@ -728,7 +779,7 @@ if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
     critic=critic_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
-    actor=actor_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256,action_num=37).to(DEVICE)
+    actor=actor_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256,action_num=36).to(DEVICE)
 
     # critic=critic_model(picture_size=[1,3,288,288],
     #                     outsider_size=[1,3,96,96],
