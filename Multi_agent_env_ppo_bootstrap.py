@@ -17,14 +17,14 @@ DONE_REWARD=20
 GAMMA=0.9
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=8
-ACTOR_LR=1e-4
+ACTOR_LR=1e-5
 ACTOR_LR_MIN=1e-6
-CRITIC_LR=1e-3
+CRITIC_LR=1e-4
 CRITIC_LR_MIN=1e-5
-CRITIC_UPDATE_TIME=2
+CRITIC_UPDATE_TIME=3
 ENCODER_LR=1e-4
-ACTOR_SCHEDULAR_STEP=500
-CRITIC_SCHEDULAR_STEP=500
+ACTOR_SCHEDULAR_STEP=200
+CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
 SHOW_IMAGE=True
@@ -38,19 +38,19 @@ ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
-EPOCH_NUM=5000
-LOAD_MODEL=True
-SWAP_NUM=[4,4,4,8]
+EPOCH_NUM=2000
+LOAD_MODEL=False
+SWAP_NUM=[1,2,4,8]
 MAX_STEP=[400,300,300,200]
 MODEL_NAME="(7).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
 
-BATCH_SIZE=30
+BATCH_SIZE=18
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
-AGENT_EPOCHS=10
+AGENT_EPOCHS=3
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -375,7 +375,7 @@ class env:
             image_index=id
         else:
             image_index=random.choices(range(0,self.sample_number),k=image_num)
-        self.image_id=image_index
+
         for i in range(len(image_index)):
             image_raw=self.image[image_index[i]]
             permutation_raw=self.label[image_index[i]]
@@ -511,9 +511,11 @@ class env:
 
     def summon_permutation_list(self,swap_num,id=[]):
         if id:
-            self.load_image(image_num=self.image_num,id=id)
+            image_index=id
         else:
-            self.load_image(image_num=self.image_num)
+            image_index=random.choices(range(0,self.sample_number),k=self.image_num)
+        self.image_id=image_index
+        self.load_image(image_num=self.image_num,id=self.image_id)
         print(f"Episode image:{self.image_id}")
         initial_permutation=list(range(self.piece_num*self.image_num))
         for i in range(self.image_num):
@@ -524,8 +526,8 @@ class env:
         print(f"Initial permutation {initial_permutation}")
         return initial_permutation
 
-    def recording_memory(self,image_id,state_list,log_probs,action_list,reward_list,next_state_list,do_list,done_list):
-        memory={"Image_id":image_id,"State_list":state_list,"Log_probs":log_probs,"Action_list": action_list,"Reward_list":reward_list,"Next_state_list":next_state_list,"Do_list":do_list,"Done_list": done_list}
+    def recording_memory(self,image_id,image_index,state,action,reward,next_state,log_prob,done):
+        memory={"Image_id":image_id,"Image_index":image_index,"State":state,"Action": action,"Log_prob":log_prob,"Reward":reward,"Next_state":next_state,"Done": done}
         if len(self.mkv_memory)<self.mkv_memory_size:
             self.mkv_memory.append(memory)
         else:
@@ -533,37 +535,36 @@ class env:
         self.memory_counter=(self.memory_counter+1)%self.mkv_memory_size
 
         
-    def update(self):
+    def update(self,show=False):
         eps=0.2
-        #Calculating return
-        i=(self.memory_counter-1)%self.mkv_memory_size
-        
         R=[0 for _ in range(self.image_num)]
         R_start=[True for _ in range(self.image_num)]
         R_track=[[] for _ in range(self.image_num)]
         self.critic_model.eval()
+        i=(self.memory_counter-1)%self.mkv_memory_size
         while i!=(self.trace_start_point-1)%self.mkv_memory_size:
-            do_list=self.mkv_memory[i]["Do_list"]
-            done_list=self.mkv_memory[i]["Done_list"]
-            reward_list=self.mkv_memory[i]["Reward_list"]
-            for j in range(len(do_list)):
-                if R_start[do_list[j]]:
-                    R_start[do_list[j]]=False
-                    current_image,current_outsider=self.get_image(self.mkv_memory[i]["State_list"][j],image_index=do_list[j])
-                    value=self.critic_model(current_image,current_outsider)
-                    R[do_list[j]]=value.item()
-                else:
-                    R[do_list[j]]=self.gamma*R[do_list[j]]*(1-done_list[j])+reward_list[j]+PANELTY
-                R_track[do_list[j]].append(R[do_list[j]])
-            self.mkv_memory[i]["Return_list"]=R.copy()
+            image_index=self.mkv_memory[i]["Image_index"]
+            done=self.mkv_memory[i]["Done"]
+            reward=self.mkv_memory[i]["Reward"]
+            if R_start[image_index]:
+                R_start[image_index]=False
+                current_image,current_outsider=self.get_image(self.mkv_memory[i]["State"],image_index=image_index)
+                value=self.critic_model(current_image,current_outsider)
+                R[image_index]=value.item()
+            else:
+                R[image_index]=self.gamma*R[image_index]*(1-done)+reward+PANELTY
+            R_track[image_index].append(R[image_index])
+            self.mkv_memory[i]["Return"]=R[image_index]
             i=(i-1)%self.mkv_memory_size
         i=(self.memory_counter-1)%self.mkv_memory_size
         R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
+
+
         while i!=(self.trace_start_point-1)%self.mkv_memory_size:
-            self.mkv_memory[i]["Return_list"]=[self.mkv_memory[i]["Return_list"][j]/R_track[j] for j in range(self.image_num)]
+            self.mkv_memory[i]["Return"]=self.mkv_memory[i]["Return"]/R_track[self.mkv_memory[i]["Image_index"]]
             i=(i-1)%self.mkv_memory_size
 
-        
+
         order=list(range(len(self.mkv_memory)))
         random.shuffle(order)
         self.actor_model.train()
@@ -583,30 +584,36 @@ class env:
             ret=[]
             actions=[]
             next_states=[]
+            next_outsiders=[]
             reward=[]
             done=[]
             old_log_probs=[]
             
             for a in range(len(sample_dicts)):
                 self.load_image(image_num=self.image_num,id=sample_dicts[a]["Image_id"])
-                do_list=sample_dicts[a]["Do_list"]
-                for b in range(len(do_list)):
-                    
-                    current_image,current_outsider=self.get_image(sample_dicts[a]["State_list"][b],image_index=b)
-                    states.append(current_image)
-                    outsider_pieces.append(current_outsider)
-                    old_log_probs.append(sample_dicts[a]["Log_probs"][b])
-                    actions.append(sample_dicts[a]["Action_list"][b])
-                    next_image,_=self.get_image(sample_dicts[a]["Next_state_list"][b],image_index=b)
-                    next_states.append(next_image)
-                    ret.append(sample_dicts[a]["Return_list"][do_list[b]])
-                    reward.append(sample_dicts[a]["Reward_list"][b])
-                    done.append(sample_dicts[a]["Done_list"][b])
+
+                current_image,current_outsider=self.get_image(sample_dicts[a]["State"],image_index=sample_dicts[a]["Image_index"])
+                states.append(current_image)
+                outsider_pieces.append(current_outsider)
+                
+                old_log_probs.append(sample_dicts[a]["Log_prob"])
+
+                actions.append(sample_dicts[a]["Action"])
+                next_image,next_outsider_piece=self.get_image(sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
+                next_states.append(next_image)
+                next_outsiders.append(next_outsider_piece)
+                
+                reward.append(sample_dicts[a]["Reward"])
+                done.append(sample_dicts[a]["Done"])
+                ret.append(sample_dicts[a]["Return"])
 
                     
             
             state_tensor=torch.cat(states,dim=0)
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
+
+            next_state_tensor=torch.cat(next_states,dim=0)
+            next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
 
             probs=self.actor_model(state_tensor,outsider_tensor)
             
@@ -614,16 +621,18 @@ class env:
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
             log_probs=torch.log(selected_probs)
             old_log_probs=torch.cat(old_log_probs,dim=0)
+            reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
+            done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
             entropy = torch.distributions.Categorical(probs).entropy()
-            
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
+            
+
 
             for _ in range(CRITIC_UPDATE_TIME):
-                # reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
-                # done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
                 # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
                 pred_ret=self.critic_model(state_tensor,outsider_tensor)
-                critic_loss=nn.functional.mse_loss(pred_ret,ret)
+                bellman_ret=self.gamma*(1-done)*self.critic_model(next_state_tensor,next_outsiders_tensor)+reward
+                critic_loss=nn.functional.mse_loss(pred_ret,bellman_ret)
                 critic_loss_sum+=critic_loss.item()
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
@@ -633,7 +642,6 @@ class env:
             pred_ret=self.critic_model(state_tensor,outsider_tensor)
             
             advantage=ret-pred_ret.detach()
-
 
             ratio=torch.exp(log_probs-old_log_probs)
             actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
@@ -650,14 +658,13 @@ class env:
             self.actor_optimizer.step()
 
             
-
-        print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}. Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
+        if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}. Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
-        torch.save(self.critic_model.state_dict(), CRITIC_PATH)
+        
         if self.critic_optimizer.state_dict()["param_groups"][0]["lr"]>CRITIC_LR_MIN:
             self.critic_schedular.step()
-        torch.save(self.actor_model.state_dict(),ACTOR_PATH)
+        
         if self.actor_optimizer.state_dict()["param_groups"][0]["lr"]>ACTOR_LR_MIN:
             self.actor_schedular.step()
 
@@ -691,6 +698,8 @@ class env:
             reward_sum_list      = [[] for _ in range(self.image_num)]
             termination_list     = [0 for _ in range(self.image_num)]
 
+            pending_transitions={j: None for j in range(self.image_num)}
+
             self.action_list=[[0 for _ in range((self.piece_num+self.buffer_size)*self.piece_num//2+1)] for __ in range(self.image_num)]
             self.trace_start_point=self.memory_counter
             last_action=[-1 for _ in range(self.image_num)]
@@ -719,9 +728,26 @@ class env:
                         
 
                         action = dist.sample()
+
+                        action_log_prob=dist.log_prob(action).detach()
+
+                        if pending_transitions[j] is not None:
+                            prev_state,prev_action,prev_log_prob,prev_reward=pending_transitions[j]
+                            self.recording_memory(image_id=self.image_id,
+                                                  image_index=j,
+                                                  state=prev_state,
+                                                  action= prev_action,
+                                                  log_prob=prev_log_prob,
+                                                  reward= prev_reward,
+                                                  next_state= perm_with_buf,
+                                                  done=done_list[j])
+                        
+                        do_list.append(j)
+
+
+
                         if last_action[j]==int(action.item()):
                             termination_list[j]+=1
-                            last_reward_list[j]-=PANELTY*0.5
                         else:
                             termination_list[j]=0
                             last_action[j]=int(action.item())
@@ -729,15 +755,16 @@ class env:
 
                         
                         # action=self.epsilon_greedy(action=action.item())
-                        log_probs.append(dist.log_prob(action).detach())
                         action=action.item()
                         model_action.append(action)
                         self.action_list[j][action]+=1
-                        do_list.append(j)
+                        
 
                         # if action==36:
                         #     termination_list[j]=True
                         #     continue
+
+                        pending_transitions[j]=(perm_with_buf,action,action_log_prob,0)
 
                         new_perm = self.permute(perm_with_buf, action)
                         permutation_list[j], buffer = new_perm[:self.piece_num-1], new_perm[self.piece_num-1:]
@@ -751,11 +778,28 @@ class env:
                     self.show_image(permutation_list)
                 for j in do_list:
                     reward_sum_list[j].append(reward_list[j])
-                if state_list:
-                    self.recording_memory(image_id=self.image_id,state_list=state_list,log_probs=log_probs,action_list=model_action,reward_list=[reward_list[j]-last_reward_list[j] for j in do_list],next_state_list=[permutation_list[j] for j in do_list ],do_list=do_list,done_list=[done_list[j] for j in do_list])
+
+                    prev_state,prev_action,prev_log_prob,_=pending_transitions[j]
+                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j]-last_reward_list[j])
+                
                 done = all(done_list)
                 step += 1
 
+                if step%TRAIN_PER_STEP==TRAIN_PER_STEP-1:
+                    self.update()
+                    self.load_image(image_num=self.image_num,id=self.image_id)
+            
+            for j in range(self.image_num):
+                if pending_transitions[j] is not None and done_list[j]:
+                    prev_state,prev_action,prev_log_prob,prev_reward=pending_transitions[j]
+                    self.recording_memory(image_id=self.image_id,
+                                                  image_index=j,
+                                                  state=prev_state,
+                                                  action= prev_action,
+                                                  log_prob=prev_log_prob,
+                                                  reward= prev_reward,
+                                                  next_state= perm_with_buf,
+                                                  done=done_list[j])
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
             print(f"Action_list: {self.action_list}")
@@ -763,11 +807,14 @@ class env:
             for j in range(self.image_num):
                 if termination_list[j]>=20:
                     self.epsilon/=(EPSILON_GAMMA**10)
+            self.update(show=True)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
-            if self.mkv_memory!=[]:
-                print("Start training")
-                self.update()
+            torch.save(self.actor_model.state_dict(),ACTOR_PATH)
+            torch.save(self.critic_model.state_dict(), CRITIC_PATH)
+
+            
+                
 
             
 

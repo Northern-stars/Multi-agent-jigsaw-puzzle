@@ -474,7 +474,7 @@ class env:
     
 
         
-    def update(self):
+    def update(self,show=False):
 
         
         for target_param, main_param in zip(self.model.parameters(),self.main_model.parameters()):
@@ -501,19 +501,19 @@ class env:
             next_outsiders=[]
             reward=[]
             for a in range(len(sample_dicts)):
-                self.load_image(image_num=self.image_num,id=self.mkv_memory[a]["Image_id"])
+                self.load_image(image_num=self.image_num,id=sample_dicts[a]["Image_id"])
 
                     
-                current_image,current_outsider=self.get_image(self.mkv_memory[a]["State"],image_index=self.mkv_memory[a]["Image_index"])
+                current_image,current_outsider=self.get_image(sample_dicts[a]["State"],image_index=sample_dicts[a]["Image_index"])
                 states.append(current_image)
                 outsider_pieces.append(current_outsider)
 
-                actions.append(self.mkv_memory[a]["Action"])
-                next_image,next_outsider_piece=self.get_image(self.mkv_memory[a]["Next_state"],image_index=self.mkv_memory[a]["Image_index"])
+                actions.append(sample_dicts[a]["Action"])
+                next_image,next_outsider_piece=self.get_image(sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
                 next_states.append(next_image)
                 next_outsiders.append(next_outsider_piece)
                 
-                reward.append(self.mkv_memory[a]["Reward"])
+                reward.append(sample_dicts[a]["Reward"])
             
 
 
@@ -536,7 +536,8 @@ class env:
             self.optimizer.step()
             loss_sum+=loss.item()
         self.schedular.step()
-        print(f"Average_loss: {loss_sum/self.epochs}")
+        if show:
+            print(f"Average_loss: {loss_sum/self.epochs}")
         
 
 
@@ -596,9 +597,9 @@ class env:
 
                     do_list.append(j)
 
-                    if action == 36:
-                        termination_list[j] = True
-                        continue
+                    # if action == 36:
+                    #     termination_list[j] = True
+                    #     continue
 
                     new_perm = self.permute(perm_with_buf, action)
                     permutation_list[j], buffer = new_perm[:self.piece_num-1], new_perm[self.piece_num-1:]
@@ -627,7 +628,7 @@ class env:
                     self.recording_memory(image_id=self.image_id,image_index=j,state=prev_state,action= prev_action,reward= prev_reward,next_state= perm_with_buf, done=done_list[j])  
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(rs)/len(rs) for rs in reward_sum_list if rs]}")
-            self.update() 
+            self.update(show=True) 
             torch.save(self.model.state_dict(),MODEL_PATH)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
