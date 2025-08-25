@@ -523,6 +523,7 @@ class env:
             next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
 
             q_next=self.model(next_state_tensor,next_outsiders_tensor).detach()
+            
             q_eval=self.main_model(next_state_tensor,next_outsiders_tensor)
 
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)

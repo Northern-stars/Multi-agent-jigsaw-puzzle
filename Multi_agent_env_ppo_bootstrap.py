@@ -16,15 +16,15 @@ DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=20
 GAMMA=0.9
 CLIP_GRAD_NORM=0.1
-TRAIN_PER_STEP=8
-ACTOR_LR=1e-5
+TRAIN_PER_STEP=25
+ACTOR_LR=1e-4
 ACTOR_LR_MIN=1e-6
-CRITIC_LR=1e-4
+CRITIC_LR=1e-3
 CRITIC_LR_MIN=1e-5
 CRITIC_UPDATE_TIME=3
 ENCODER_LR=1e-4
-ACTOR_SCHEDULAR_STEP=200
-CRITIC_SCHEDULAR_STEP=100
+ACTOR_SCHEDULAR_STEP=500
+CRITIC_SCHEDULAR_STEP=500
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
 SHOW_IMAGE=True
@@ -40,17 +40,17 @@ ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[1,2,4,8]
+SWAP_NUM=[1,2,4,4]
 MAX_STEP=[400,300,300,200]
-MODEL_NAME="(7).pth"
+MODEL_NAME="(8).pth"
 ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
 
-BATCH_SIZE=18
+BATCH_SIZE=15
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
-AGENT_EPOCHS=3
+AGENT_EPOCHS=1
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -129,6 +129,7 @@ class actor_model(nn.Module):
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
+        self.bn=nn.BatchNorm1d(hidden_size2)
         self.fc2=nn.Linear(hidden_size2,action_num)
     
     def forward(self,image,outsider_piece):
@@ -150,8 +151,9 @@ class actor_model(nn.Module):
         outsider_tensor=self.outsider_fc(outsider_tensor)
         feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
-        out=self.relu(out)
         out=self.dropout(out)
+        out=self.bn(out)
+        out=self.relu(out)
         out=self.fc2(out)
         out=nn.functional.softmax(out,dim=1)
         return out
@@ -176,6 +178,7 @@ class critic_model(nn.Module):
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
+        self.bn=nn.BatchNorm1d(hidden_size2)
         self.fc=nn.Linear(hidden_size2,1)
     
     def forward(self,image,outsider):
@@ -197,8 +200,9 @@ class critic_model(nn.Module):
         outsider_tensor=self.outsider_fc(outsider_tensor)
         feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
-        out=self.relu(out)
         out=self.dropout(out)
+        out=self.bn(out)
+        out=self.relu(out)
         out=self.fc(out)
         return out
 
@@ -340,7 +344,8 @@ class env:
                  epsilon,
                  epsilon_gamma,
                  piece_num=9,
-                 epochs=10
+                 epochs=10,
+                 tau=0.01
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -353,9 +358,10 @@ class env:
         self.trace_start_point=0
         self.actor_model=actor_model
         self.critic_model=critic_model
+        self.main_critic_model=copy.deepcopy(self.critic_model)
         self.actor_optimizer=torch.optim.Adam(self.actor_model.parameters(),lr=ACTOR_LR)
         self.actor_schedular=torch.optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=ACTOR_SCHEDULAR_STEP, gamma=0.1)
-        self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR)
+        self.critic_optimizer=torch.optim.Adam(self.main_critic_model.parameters(),lr=CRITIC_LR)
         self.critic_schedular=torch.optim.lr_scheduler.StepLR(optimizer=self.critic_optimizer,gamma=0.1,step_size=CRITIC_SCHEDULAR_STEP)
         self.device=device
         self.batch_size=batch_size
@@ -368,6 +374,7 @@ class env:
         self.epsilon=epsilon
         self.epsilon_gamma=epsilon_gamma
         self.epochs=epochs
+        self.tau=tau
 
     
     def load_image(self,image_num,id=[]):
@@ -444,12 +451,20 @@ class env:
             piece_range=[0 for j in range (len(permutation_list))]
             # print(piece_range)
         
+            # for j in range(piece_num):
+            #     if permutation_copy[i][j]!=-1:
+            #         label=permutation_copy[i][j]%piece_num
+            #         manhatton_distance=abs(j%edge_length-label%edge_length)+abs(j//edge_length-label//edge_length)
+            #         piece_range[permutation_copy[i][j]//piece_num]+=1
+            #         reward_list[i]+=(1/(manhatton_distance+1)) * (permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
+            
+            
             for j in range(piece_num):
                 if permutation_copy[i][j]!=-1:
                     piece_range[permutation_copy[i][j]//piece_num]+=1
                     reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
-            
+
             max_piece=piece_range[i]#Consistancy reward
 
             weight=0.2
@@ -539,7 +554,7 @@ class env:
         eps=0.2
         R=[0 for _ in range(self.image_num)]
         R_start=[True for _ in range(self.image_num)]
-        R_track=[[] for _ in range(self.image_num)]
+        # R_track=[[] for _ in range(self.image_num)]
         self.critic_model.eval()
         i=(self.memory_counter-1)%self.mkv_memory_size
         while i!=(self.trace_start_point-1)%self.mkv_memory_size:
@@ -553,16 +568,16 @@ class env:
                 R[image_index]=value.item()
             else:
                 R[image_index]=self.gamma*R[image_index]*(1-done)+reward+PANELTY
-            R_track[image_index].append(R[image_index])
+            # R_track[image_index].append(R[image_index])
             self.mkv_memory[i]["Return"]=R[image_index]
             i=(i-1)%self.mkv_memory_size
         i=(self.memory_counter-1)%self.mkv_memory_size
-        R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
+        # R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
 
 
-        while i!=(self.trace_start_point-1)%self.mkv_memory_size:
-            self.mkv_memory[i]["Return"]=self.mkv_memory[i]["Return"]/R_track[self.mkv_memory[i]["Image_index"]]
-            i=(i-1)%self.mkv_memory_size
+        # while i!=(self.trace_start_point-1)%self.mkv_memory_size:
+        #     self.mkv_memory[i]["Return"]=self.mkv_memory[i]["Return"]/R_track[self.mkv_memory[i]["Image_index"]]
+        #     i=(i-1)%self.mkv_memory_size
 
 
         order=list(range(len(self.mkv_memory)))
@@ -610,6 +625,14 @@ class env:
                     
             
             state_tensor=torch.cat(states,dim=0)
+            if state_tensor.size(0)==1:
+                self.critic_model.eval()
+                self.actor_model.eval()
+                self.main_critic_model.eval()
+            else:
+                self.critic_model.train()
+                self.actor_model.train()
+                self.main_critic_model.train()
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
 
             next_state_tensor=torch.cat(next_states,dim=0)
@@ -627,22 +650,11 @@ class env:
             ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
             
 
-
-            for _ in range(CRITIC_UPDATE_TIME):
-                # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
-                pred_ret=self.critic_model(state_tensor,outsider_tensor)
-                bellman_ret=self.gamma*(1-done)*self.critic_model(next_state_tensor,next_outsiders_tensor)+reward
-                critic_loss=nn.functional.mse_loss(pred_ret,bellman_ret)
-                critic_loss_sum+=critic_loss.item()
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-
-
             pred_ret=self.critic_model(state_tensor,outsider_tensor)
             
             advantage=ret-pred_ret.detach()
-
+            if advantage.size(0)>1:
+                advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
             ratio=torch.exp(log_probs-old_log_probs)
             actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
 
@@ -656,6 +668,22 @@ class env:
 
             torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
+
+            for _ in range(CRITIC_UPDATE_TIME):
+                # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
+                pred_ret=self.main_critic_model(state_tensor,outsider_tensor)
+                bellman_ret=self.gamma*(1-done)*self.critic_model(next_state_tensor,next_outsiders_tensor)+reward
+                critic_loss=nn.functional.mse_loss(pred_ret,bellman_ret.detach())
+                critic_loss_sum+=critic_loss.item()
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                self.critic_optimizer.step()
+
+            for target_param, main_param in zip(self.critic_model.parameters(),self.main_critic_model.parameters()):
+                target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
+
+
+            
 
             
         if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}. Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
@@ -676,6 +704,7 @@ class env:
         if load:
             self.critic_model.load_state_dict(torch.load(CRITIC_PATH))
             self.actor_model.load_state_dict(torch.load(ACTOR_PATH))
+            self.main_critic_model=copy.deepcopy(self.critic_model)
 
         
         for i in range(epoch):
@@ -705,7 +734,7 @@ class env:
             last_action=[-1 for _ in range(self.image_num)]
 
 
-            step = 0; done = False
+            step = 0; done = False ; train_flag=True
             while not done and step < max_step:
                 state_list=[]
                 do_list = []
@@ -716,8 +745,11 @@ class env:
                     self.actor_model.eval()
                     
                     for j in range(self.image_num):
-                        if done_list[j] or termination_list[j]>20:           
+                        if done_list[j] :           
                             continue
+                        elif termination_list[j]>=40:
+                            termination_list[j]=0
+                            train_flag=True
                         
                         perm_with_buf = permutation_list[j] + buffer
                         state_list.append(copy.deepcopy(perm_with_buf))
@@ -785,9 +817,19 @@ class env:
                 done = all(done_list)
                 step += 1
 
-                if step%TRAIN_PER_STEP==TRAIN_PER_STEP-1:
+                if step%TRAIN_PER_STEP==0 and len(self.mkv_memory)>0:
+                    train_flag=False
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
+                    self.clean_memory()
+                elif train_flag and len(self.mkv_memory)>0:
+                    train_flag=False
+                    self.epsilon/=(EPSILON_GAMMA**5)
+                    self.update()
+                    self.load_image(image_num=self.image_num,id=self.image_id)
+                    self.clean_memory
+
+
             
             for j in range(self.image_num):
                 if pending_transitions[j] is not None and done_list[j]:
@@ -806,8 +848,9 @@ class env:
             print(f"Permutation list: {permutation_list}")
             for j in range(self.image_num):
                 if termination_list[j]>=20:
-                    self.epsilon/=(EPSILON_GAMMA**10)
-            self.update(show=True)
+                    self.epsilon/=(EPSILON_GAMMA**5)
+            if len(self.mkv_memory)>0:
+                self.update(show=True)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
             torch.save(self.actor_model.state_dict(),ACTOR_PATH)
@@ -826,8 +869,8 @@ class env:
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
-    critic=critic_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
-    actor=actor_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256,action_num=36).to(DEVICE)
+    critic=critic_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
+    actor=actor_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256,action_num=36).to(DEVICE)
 
     # critic=critic_model(picture_size=[1,3,288,288],
     #                     outsider_size=[1,3,96,96],
