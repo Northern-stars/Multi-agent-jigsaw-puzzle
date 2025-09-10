@@ -28,7 +28,7 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-SHOW_IMAGE=True
+SHOW_IMAGE=False
 
 
 PAIR_WISE_REWARD=.2
@@ -40,14 +40,14 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=True
+LOAD_MODEL=False
 SWAP_NUM=[2,3,4,8]
 MAX_STEP=[400,400,400,400]
 MODEL_NAME="(7).pth"
 MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
 
 
-BATCH_SIZE=25
+BATCH_SIZE=5
 EPSILON=0.9
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -116,10 +116,10 @@ class fen_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(fen_model,self).__init__()
         self.ef=efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,256)
-        self.contrast_fc_hori=nn.Linear(512,256)
-        self.contrast_fc_vert=nn.Linear(512,256)
-        self.fc1=nn.Linear(256*12,hidden_size1)
+        self.ef.classifier=nn.Linear(1536,512)
+        self.contrast_fc_hori=nn.Linear(1024,512)
+        self.contrast_fc_vert=nn.Linear(1024,512)
+        self.fc1=nn.Linear(512*12,hidden_size1)
         self.relu=nn.ReLU()
         self.bn=nn.BatchNorm1d(hidden_size1)
         self.do=nn.Dropout1d(p=0.1)
@@ -239,7 +239,7 @@ class Local_switcher_model(nn.Module):
         self.fc2=nn.Linear(hidden1,hidden2)
         self.do=nn.Dropout(dropout)
         self.bn2=nn.BatchNorm1d(hidden2)
-        self.outlayer=nn.Lienar(hidden2,action_num)
+        self.outlayer=nn.Linear(hidden2,action_num)
     
     def forward(self,image):
         feature_tensor=self.fen_model(image)
@@ -522,14 +522,14 @@ class Decider:
         self.actor_schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer=self.actor_optimizer,
             T_0=10,
-            T_mult=1.5,
+            T_mult=1,
             eta_min=1e-6,
             last_epoch=-1
         )
         self.critic_schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer=self.critic_optimizer,
             T_0=10,
-            T_mult=1.5,
+            T_mult=1,
             eta_min=1e-5,
             last_epoch=-1
         )
@@ -568,10 +568,14 @@ class Decider:
         else:
             self.memory[self.memory_counter]=memory
         self.memory_counter=(self.memory_counter+1)%self.memory_size
-    
-    def act(self,current_image,other_image,outsider_piece):
 
-        prob=self.actor_model(current_image,other_image,outsider_piece)
+    def clean_memory(self):
+        self.memory=[]
+        self.memory_counter=0
+        self.trace_start_point=self.memory_counter
+    def act(self,current_image,other_image,outsider_piece):
+        self.actor_model.eval()
+        prob=nn.Softmax(dim=-1)(self.actor_model(current_image,other_image,outsider_piece))
         dist=torch.distributions.Categorical(prob)
         action=dist.sample()
         action_log_prob=dist.log_prob(action).detach()
@@ -671,7 +675,7 @@ class Decider:
             next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
             next_other_image_tensor=torch.cat(next_other_images,dim=0)
 
-            probs=self.actor_model(state_tensor,other_image_tensor,outsider_tensor)
+            probs=nn.Softmax(dim=-1)(self.actor_model(state_tensor,other_image_tensor,outsider_tensor))
             
             action_tensor=torch.tensor(actions).to(DEVICE).unsqueeze(-1)
             selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
@@ -879,6 +883,7 @@ class Local_switcher:
             print(f"Average_loss: {loss_sum/self.env.epochs}")
 
     def act(self,permutation,image_index):
+        self.model.eval()
         action=self.choose_action(permutation=permutation,image_index=image_index)
         action=self.epsilon_greedy(action)
         permutation_=self.permute(cur_permutation=permutation,action_index=action)
@@ -903,7 +908,7 @@ class Buffer_switcher:
         self.schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer=self.optimizer,
             T_0=10,
-            T_mult=1.5,
+            T_mult=1,
             eta_min=1e-6,
             last_epoch=-1
         )
@@ -950,6 +955,7 @@ class Buffer_switcher:
         self.memory_counter=0
 
     def act(self,image,outsider,permutation):
+        self.model.eval()
         with torch.no_grad():
             action=torch.argmax(self.model(image,outsider),dim=-1)
             action=self.epsilon_greedy(action=action.item())
@@ -1092,10 +1098,10 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                 max_step, swap_num = MAX_STEP[0], SWAP_NUM[0]
         
         initial_perm=env.summon_permutation_list(swap_num)
-        permutation_list = [initial_perm[j*env.piece_num:(j+1)*env.piece_num]
+        permutation_list = [initial_perm[j*(env.piece_num-1):(j+1)*(env.piece_num-1)]
                                 for j in range(env.image_num)]
         buffer=[-1]*env.buffer_size
-        done_list=[False] * env.buffer_size
+        done_list=[False] * env.image_num
         reward_sum_list= [[] for _ in range(env.image_num)]
         termination_list=[0 for _ in range(env.image_num)]
 
@@ -1104,6 +1110,7 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
         last_actions=[-1 for _ in range(env.image_num)]
 
         step=0; done = False ; 
+        clean_memory(decider,local_switcher,buffer_switcher)
 
         while not done and step < max_step:
             state_list=[]
@@ -1113,7 +1120,7 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
             pending_transitions_decider = {j: None for j in range(env.image_num)}
             pending_transitions_local_switcher= {j: None for j in range(env.image_num)}
             pending_transitions_buffer_switcher={j: None for j in range(env.image_num)}
-
+            decider.trace_start_point=decider.memory_counter
             with torch.no_grad():
                 for j in range(env.image_num):
                     if done_list[j]:
@@ -1184,53 +1191,51 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                         permutation_list[j]=copy.deepcopy(permutation_)
                         
                     
-                    reward_list, done_list=env.get_reward(permutation_list)
+                reward_list, done_list=env.get_reward(permutation_list)
 
-                    if SHOW_IMAGE:
-                        env.show_image(permutation_list)
+                if SHOW_IMAGE:
+                    env.show_image(permutation_list)
+                
+                for j in do_list:
+                    reward_sum_list[j].append(reward_list[j])
                     
-                    for j in do_list:
-                        reward_sum_list[j].append(reward_list[j])
-                        prev_state, prev_other_state,prev_action, prev_log_prob = pending_transitions_decider[j]
-                        pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action, prev_log_prob,reward_list[j])
+                    prev_state, prev_other_state,prev_action, prev_log_prob = pending_transitions_decider[j]
+                    pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action, prev_log_prob,reward_list[j])
 
-                        if model_action[j]:
-                            state,action=pending_transitions_buffer_switcher[j]
-                            pending_transitions_buffer_switcher[j]=(state,action,reward_list[j],done_list[j])
-                        else:
-                            state,action,next_state=pending_transitions_local_switcher[j]
-                            pending_transitions_local_switcher=(state,action,next_state,reward_list[j],done_list[j])
+                    if model_action[j]:
+                        state,action=pending_transitions_buffer_switcher[j]
+                        pending_transitions_buffer_switcher[j]=(state,action,reward_list[j],done_list[j])
+                    else:
+                        state,action,next_state=pending_transitions_local_switcher[j]
+                        pending_transitions_local_switcher[j]=(state,action,next_state,reward_list[j],done_list[j])
+                
+                done=all(done_list)
+                step+=1
+                # print(f"Decider: {pending_transitions_decider}\n Local_switcher: {pending_transitions_local_switcher}\n Buffer_switcher: {pending_transitions_buffer_switcher}")
+
+                if step%TRAIN_PER_STEP==0:
+                    update(
+                        decider=decider,
+                        local_switcher=local_switcher,
+                        buffer_switcher=buffer_switcher
+                    )  
+                    env.load_image(image_num=env.image_num, id=env.image_id)
                     
-                    done=all(done_list)
-                    step+=1
-
-                    if step%TRAIN_PER_STEP==0:
-                        update(
-                            decider=decider,
-                            local_switcher=local_switcher,
-                            buffer_switcher=buffer_switcher
-                        )  
-                        env.load_image(image_num=env.image_num, id=env.image_id)
-                        clean_memory(
-                            decider=decider,
-                            local_switcher=local_switcher,
-                            buffer_switcher=buffer_switcher
-                        )
-            print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
-            # print(f"Action_list: {self.action_list}")
-            print(f"Permutation list: {permutation_list}")
-            if env.epsilon>EPSILON_MIN:
-                env.epsilon*=EPSILON_GAMMA
-            update(
-                decider=decider,
-                local_switcher=local_switcher,
-                buffer_switcher=buffer_switcher
-            )  
-            save(
-                decider=decider,
-                local_switcher=local_switcher,
-                buffer_switcher=buffer_switcher
-            )
+        print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
+        # print(f"Action_list: {self.action_list}")
+        print(f"Permutation list: {permutation_list}")
+        if env.epsilon>EPSILON_MIN:
+            env.epsilon*=EPSILON_GAMMA
+        update(
+            decider=decider,
+            local_switcher=local_switcher,
+            buffer_switcher=buffer_switcher
+        )  
+        save(
+            decider=decider,
+            local_switcher=local_switcher,
+            buffer_switcher=buffer_switcher
+        )
             
                 
 
@@ -1294,13 +1299,14 @@ if __name__ == "__main__":
                                               fen_model_hidden2=512,
                                               hidden1=1024,
                                               hidden2=512,
-                                              action_num=1)
+                                              action_num=1).to(DEVICE)
     local_switcher=Local_switcher(
         memory_size=2000,
         gamma=environment.gamma,
         batch_size=BATCH_SIZE,
         action_num=28,
-        env=environment
+        env=environment,
+        model=local_switcher_model
     )
     # pretrain_model_dict=pretrain_model(256,256)
     # pretrain_model_dict.load_state_dict(torch.load("pairwise_pretrain.pth"))
@@ -1308,7 +1314,8 @@ if __name__ == "__main__":
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_hori":"fen_model.contrast_fc_hori"})
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_vert":"fen_model.contrast_fc_vert"})
 
-    run_maze(decider=decider,
+    run_maze(env=environment,
+        decider=decider,
              local_switcher=local_switcher
              ,buffer_switcher=buffer_switcher
              ,epoch_num=EPOCH_NUM
