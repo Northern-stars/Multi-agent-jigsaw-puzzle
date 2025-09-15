@@ -40,14 +40,14 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=False
+LOAD_MODEL=True
 SWAP_NUM=[2,3,4,8]
-MAX_STEP=[400,400,400,400]
+MAX_STEP=[200,200,200,200]
 MODEL_NAME="(7).pth"
 MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
 
 
-BATCH_SIZE=10
+BATCH_SIZE=15
 EPSILON=0.5
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -661,7 +661,7 @@ class Decider:
                 self.critic_optimizer.step()
                 
 
-        if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/self.epochs}. Actor_loss: {actor_loss_sum*self.batch_size/self.epochs}")
+        if show: print(f"Decider\nCritic loss: {critic_loss_sum*self.batch_size/self.epochs}. Actor_loss: {actor_loss_sum*self.batch_size/self.epochs}")
         
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
@@ -795,7 +795,12 @@ class Local_switcher:
                 reward.append(sample_dicts[a]["Reward"])
             
 
-
+            if len(states)==1:
+                self.model.eval()
+                self.main_model.eval()
+            else:
+                self.model.train()
+                self.main_model.train()
             state_tensor=torch.cat(states,dim=0)
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
             next_state_tensor=torch.cat(next_states,dim=0)
@@ -823,7 +828,7 @@ class Local_switcher:
             target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
         self.schedular.step()
         if show:
-            print(f"Average_loss: {loss_sum/self.env.epochs}")
+            print(f"Local switcher loss: {loss_sum/self.env.epochs}")
 
     def act(self,permutation,image_index):
         self.model.eval()
@@ -997,7 +1002,7 @@ class Buffer_switcher:
             
         # print(f"Buffer_switcher: {has_any_gradient(self.main_model)}")
             
-        if show: print(f"Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
+        if show: print(f"Buffer switcher loss: {actor_loss_sum*self.batch_size/len(self.memory)}")
         
         
         
@@ -1166,7 +1171,8 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                 update(
                     decider=decider,
                     local_switcher=local_switcher,
-                    buffer_switcher=buffer_switcher
+                    buffer_switcher=buffer_switcher,
+                    show=True
                 )  
                 env.load_image(image_num=env.image_num, id=env.image_id)
                     
