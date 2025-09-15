@@ -17,7 +17,7 @@ DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=2000
 GAMMA=0.998
 CLIP_GRAD_NORM=0.1
-TRAIN_PER_STEP=20
+TRAIN_PER_STEP=25
 ACTOR_LR=1e-4
 ACTOR_LR_MIN=1e-6
 CRITIC_LR=1e-3
@@ -28,7 +28,7 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-SHOW_IMAGE=True
+SHOW_IMAGE=False
 
 
 PAIR_WISE_REWARD=.2
@@ -47,7 +47,7 @@ MODEL_NAME="(7).pth"
 MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
 
 
-BATCH_SIZE=50
+BATCH_SIZE=10
 EPSILON=0.5
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -67,6 +67,9 @@ train_x=np.load(train_x_path)
 train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
 
+def has_any_gradient(model):
+    """检查模型是否有任何梯度"""
+    return any(param.grad is not None for param in model.parameters() if param.requires_grad)
 
 def selective_load_state_dict(source_model, target_model, layer_mapping):
     """
@@ -495,6 +498,7 @@ class Decider:
                          ,next_state
                          ,next_other_state
                          ,done):
+        # print("Recording decider")
         memory={"Image_id":image_id,"Image_index":image_index,"Other_image_index":other_image_index,"Log_prob":log_prob,"State":state,"Other_state":other_state,"Action": action,"Reward":reward,"Next_state":next_state,"Next_other_state":next_other_state,"Done": done}
         if len(self.memory)<self.memory_size:
             self.memory.append(memory)
@@ -507,21 +511,25 @@ class Decider:
         self.memory_counter=0
         self.trace_start_point=self.memory_counter
     def act(self,current_image,other_image,outsider_piece):
-        self.actor_model.eval()
-        prob=nn.Softmax(dim=-1)(self.actor_model(current_image,other_image,outsider_piece))
-        dist=torch.distributions.Categorical(prob)
-        action=dist.sample()
-        action_log_prob=dist.log_prob(action).detach()
+        with torch.no_grad():
+            self.actor_model.eval()
+            prob=nn.Softmax(dim=-1)(self.actor_model(current_image,other_image,outsider_piece))
+            dist=torch.distributions.Categorical(prob)
+            action=dist.sample()
+            action_log_prob=dist.log_prob(action).detach()
         # action=self.epsilon_greedy(action.item())
         return action,action_log_prob
 
     def update(self,show=False):
+        # print("Updating decider")
+
         eps=0.2
         R=[0 for _ in range(self.env.image_num)]
         R_start=[True for _ in range(self.env.image_num)]
         # R_track=[[] for _ in range(self.image_num)]
         self.critic_model.eval()
         i=(self.memory_counter-1)%self.memory_size
+
         while i!=(self.trace_start_point-1)%self.memory_size:
             image_index=self.memory[i]["Image_index"]
             done=self.memory[i]["Done"]
@@ -573,16 +581,17 @@ class Decider:
 
 
                 current_image,current_outsider=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["State"],image_index=sample_dicts[a]["Image_index"])
-                other_image=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Other_image"],image_index=sample_dicts[a]["Other_image_index"])
+                other_image,_=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Other_state"],image_index=sample_dicts[a]["Other_image_index"])
                 states.append(current_image)
                 outsider_pieces.append(current_outsider)
                 other_images.append(other_image)
+
                 
                 old_log_probs.append(sample_dicts[a]["Log_prob"])
 
                 actions.append(sample_dicts[a]["Action"])
                 next_image,next_outsider_piece=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
-                next_other_image,_=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Next_other_image"],image_index=sample_dicts[a]["Other_image_index"])
+                next_other_image,_=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Next_other_state"],image_index=sample_dicts[a]["Other_image_index"])
                 next_states.append(next_image)
                 next_outsiders.append(next_outsider_piece)
                 next_other_images.append(next_other_image)
@@ -620,7 +629,7 @@ class Decider:
             ret=torch.tensor(ret,dtype=torch.float32).to(DEVICE).unsqueeze(-1)
             
 
-            pred_ret=self.critic_model(state_tensor,outsider_tensor)
+            pred_ret=self.critic_model(state_tensor,other_image_tensor,outsider_tensor)
             
             advantage=ret-pred_ret.detach()
             if advantage.size(0)>1:
@@ -634,11 +643,11 @@ class Decider:
             
             actor_loss.backward()
 
-            
+            # print(f"Decider_actor: {has_any_gradient(self.actor_model)}")
 
             torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
-            self.actor_schedular.step()
+            
 
             for _ in range(2):
                 # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
@@ -648,13 +657,16 @@ class Decider:
                 critic_loss_sum+=critic_loss.item()
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
+                # print(f"Decider_critic: {has_any_gradient(self.critic_model)}")
                 self.critic_optimizer.step()
-                self.critic_schedular.step()
+                
 
         if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/self.epochs}. Actor_loss: {actor_loss_sum*self.batch_size/self.epochs}")
         
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
+        self.actor_schedular.step() 
+        self.critic_schedular.step()
         
 
 class Local_switcher:
@@ -696,6 +708,7 @@ class Local_switcher:
                          ,reward
                          ,next_state
                          ,done):
+        # print("Recording local switcher")
         memory={"Image_id":image_id,"Image_index":image_index,"State":state,"Action": action,"Reward":reward,"Next_state":next_state,"Done": done}
         if len(self.memory)<self.memory_size:
             self.memory.append(memory)
@@ -747,7 +760,7 @@ class Local_switcher:
         return int(best_action)
 
     def update(self,show=False):
-
+        # print("Updating local switcher")
         self.model.train()
         self.main_model.train()
         #select batch_size sample
@@ -801,14 +814,14 @@ class Local_switcher:
             self.optimizer.zero_grad()
             loss.float().backward()
             self.optimizer.step()
-            self.schedular.step()
+            
             loss_sum+=loss.item()
 
-        
+        # print(f"Local_switcher: {has_any_gradient(self.main_model)}")
 
         for target_param, main_param in zip(self.model.parameters(),self.main_model.parameters()):
             target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
-        
+        self.schedular.step()
         if show:
             print(f"Average_loss: {loss_sum/self.env.epochs}")
 
@@ -873,6 +886,7 @@ class Buffer_switcher:
 
 
         memory={"Image_id":image_id,"Image_index":image_index,"State":state,"Action": action,"Reward":reward,"Next_state":next_state,"Done": done}
+        # print("Recording buffer_switcher")
         if len(self.memory)<self.memory_size:
             self.memory.append(memory)
         else:
@@ -894,7 +908,7 @@ class Buffer_switcher:
         return permutation,action
 
     def update(self,show=False):
-
+        # print("Updating buffer switcher")
         order=list(range(len(self.memory)))
         random.shuffle(order)
         self.main_model.train()
@@ -981,7 +995,7 @@ class Buffer_switcher:
 
 
             
-
+        # print(f"Buffer_switcher: {has_any_gradient(self.main_model)}")
             
         if show: print(f"Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
         
@@ -989,12 +1003,12 @@ class Buffer_switcher:
         
 
         
-def update(decider,local_switcher,buffer_switcher):
+def update(decider,local_switcher,buffer_switcher,show=False):
     print("Updating")
     
-    decider.update()
-    local_switcher.update()
-    buffer_switcher.update()
+    decider.update(show)
+    local_switcher.update(show)
+    buffer_switcher.update(show)
 
 def clean_memory(decider,local_switcher,buffer_switcher):
     decider.clean_memory()
@@ -1044,106 +1058,109 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
 
         step=0; done = False ; 
         clean_memory(decider,local_switcher,buffer_switcher)
+        pending_transitions_decider = {j: None for j in range(env.image_num)}
+        pending_transitions_local_switcher= {j: None for j in range(env.image_num)}
+        pending_transitions_buffer_switcher={j: None for j in range(env.image_num)}
+        decider.trace_start_point=decider.memory_counter
         while not done and step < max_step:
             state_list=[]
             do_list=[]
             model_action=[0 for j in range(env.image_num)] 
             last_reward_list,_=env.get_reward(permutation_list)
-            pending_transitions_decider = {j: None for j in range(env.image_num)}
-            pending_transitions_local_switcher= {j: None for j in range(env.image_num)}
-            pending_transitions_buffer_switcher={j: None for j in range(env.image_num)}
-            decider.trace_start_point=decider.memory_counter
-            with torch.no_grad():
-                for j in range(env.image_num):
-                    if done_list[j]:
-                        continue
-                    elif termination_list[j]>=40:
-                        termination_list[j]=0
-                    perm_with_buf=permutation_list[j]+buffer
-                    do_list.append(j)
-                    if pending_transitions_decider[j] is not None:
-                        prev_state, prev_other_state,prev_action, prev_log_prob,prev_reward = pending_transitions_decider[j]
-                        decider.recording_memory(image_id=env.image_id
-                                                            ,image_index=j,
-                                                            other_image_index=(j+1)%env.image_num
-                                                            ,state=prev_state
-                                                            ,other_state=prev_other_state
-                                                            ,action= prev_action
-                                                            ,log_prob=prev_log_prob
-                                                            ,reward= prev_reward
-                                                            ,next_state= perm_with_buf
-                                                            ,next_other_state=permutation_list[(j+1)%env.image_num]
-                                                            , done=done_list[j])
-                        pending_transitions_decider[j]=None
-
-                    if pending_transitions_local_switcher[j] is not None:
-                        prev_state, prev_action, prev_reward = pending_transitions_local_switcher[j]
-                        local_switcher.recording_memory(image_id=env.image_id
-                                                        ,image_index=j
+            
+            
+            
+            for j in range(env.image_num):
+                if done_list[j]:
+                    continue
+                elif termination_list[j]>=40:
+                    termination_list[j]=0
+                perm_with_buf=permutation_list[j]+buffer
+                do_list.append(j)
+                if pending_transitions_decider[j] is not None:
+                    prev_state, prev_other_state,prev_action, prev_log_prob,prev_reward = pending_transitions_decider[j]
+                    decider.recording_memory(image_id=env.image_id
+                                                        ,image_index=j,
+                                                        other_image_index=(j+1)%env.image_num
                                                         ,state=prev_state
+                                                        ,other_state=prev_other_state
                                                         ,action= prev_action
+                                                        ,log_prob=prev_log_prob
                                                         ,reward= prev_reward
                                                         ,next_state= perm_with_buf
+                                                        ,next_other_state=permutation_list[(j+1)%env.image_num]
                                                         , done=done_list[j])
-                        pending_transitions_local_switcher[j]=None
+                    pending_transitions_decider[j]=None
 
-                    if pending_transitions_buffer_switcher[j] is not None:
-                        state, action, reward,done = pending_transitions_buffer_switcher[j]
-                        buffer_switcher.recording_memory(image_id=env.image_id
-                                                         ,image_index=j
-                                                         ,state=state
-                                                         ,action= action
-                                                         ,reward= reward
-                                                         ,next_state= perm_with_buf
-                                                         , done=done)
-                        pending_transitions_buffer_switcher[j]=None
+                if pending_transitions_local_switcher[j] is not None:
+                    # print(pending_transitions_local_switcher[j])
+                    prev_state, prev_action, prev_next_state,prev_reward ,prev_done= pending_transitions_local_switcher[j]
+                    local_switcher.recording_memory(image_id=env.image_id
+                                                    ,image_index=j
+                                                    ,state=prev_state
+                                                    ,action= prev_action
+                                                    ,reward= prev_reward
+                                                    ,next_state= prev_next_state
+                                                    , done=prev_done)
+                    pending_transitions_local_switcher[j]=None
 
-                    
-                    
-                    state_list.append(copy.deepcopy(perm_with_buf))
-                    image,outsider=env.get_image(perm_with_buf,image_index=j)
-                    other_image,_=env.get_image(permutation_list[(j+1)%env.image_num],image_index=(j+1)%env.image_num)
-                    decider_action,decider_log_prob=decider.act(current_image=image,outsider_piece=outsider,other_image=other_image)
-                    pending_transitions_decider[j]=(permutation_list[j],permutation_list[(j+1)%env.image_num],decider_action,decider_log_prob)
-                    
-                    model_action[j]=decider_action
+                if pending_transitions_buffer_switcher[j] is not None:
+                    state, action, reward,done = pending_transitions_buffer_switcher[j]
+                    buffer_switcher.recording_memory(image_id=env.image_id
+                                                        ,image_index=j
+                                                        ,state=state
+                                                        ,action= action
+                                                        ,reward= reward
+                                                        ,next_state= perm_with_buf
+                                                        , done=done)
+                    pending_transitions_buffer_switcher[j]=None
 
-                    if decider_action:
-
-                        perm_with_buf_,action=buffer_switcher.act(image,outsider,perm_with_buf)
-                        permutation_list[j]=copy.deepcopy(perm_with_buf[:len(perm_with_buf_)-env.buffer_size])
-                        buffer=copy.deepcopy(perm_with_buf_[len(perm_with_buf_)-env.buffer_size:])
-                        pending_transitions_buffer_switcher[j]=(perm_with_buf,action)
-                        
-                    
-                    
-                    else:
-                        permutation_,action=local_switcher.act(permutation=permutation_list[j],image_index=j)
-                        pending_transitions_local_switcher[j]=(permutation_list[j],action,permutation_)
-                        permutation_list[j]=copy.deepcopy(permutation_)
-                        
-                    
-                reward_list, done_list=env.get_reward(permutation_list)
-
-                if SHOW_IMAGE:
-                    env.show_image(permutation_list)
                 
-                for j in do_list:
-                    reward_sum_list[j].append(reward_list[j])
-                    
-                    prev_state, prev_other_state,prev_action, prev_log_prob = pending_transitions_decider[j]
-                    pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action, prev_log_prob,reward_list[j])
-
-                    if model_action[j]:
-                        state,action=pending_transitions_buffer_switcher[j]
-                        pending_transitions_buffer_switcher[j]=(state,action,reward_list[j],done_list[j])
-                    else:
-                        state,action,next_state=pending_transitions_local_switcher[j]
-                        pending_transitions_local_switcher[j]=(state,action,next_state,reward_list[j],done_list[j])
                 
-                done=all(done_list)
-                step+=1
-                # print(f"Decider: {pending_transitions_decider}\n Local_switcher: {pending_transitions_local_switcher}\n Buffer_switcher: {pending_transitions_buffer_switcher}")
+                state_list.append(copy.deepcopy(perm_with_buf))
+                image,outsider=env.get_image(perm_with_buf,image_index=j)
+                other_image,_=env.get_image(permutation_list[(j+1)%env.image_num],image_index=(j+1)%env.image_num)
+                decider_action,decider_log_prob=decider.act(current_image=image,outsider_piece=outsider,other_image=other_image)
+                pending_transitions_decider[j]=(permutation_list[j],permutation_list[(j+1)%env.image_num],decider_action,decider_log_prob)
+                
+                model_action[j]=decider_action
+
+                if decider_action:
+
+                    perm_with_buf_,action=buffer_switcher.act(image,outsider,perm_with_buf)
+                    permutation_list[j]=copy.deepcopy(perm_with_buf[:len(perm_with_buf_)-env.buffer_size])
+                    buffer=copy.deepcopy(perm_with_buf_[len(perm_with_buf_)-env.buffer_size:])
+                    pending_transitions_buffer_switcher[j]=(perm_with_buf,action)
+                    
+                
+                
+                else:
+                    permutation_,action=local_switcher.act(permutation=permutation_list[j],image_index=j)
+                    pending_transitions_local_switcher[j]=(permutation_list[j],action,permutation_)
+                    permutation_list[j]=copy.deepcopy(permutation_)
+                    
+                
+            reward_list, done_list=env.get_reward(permutation_list)
+
+            if SHOW_IMAGE:
+                env.show_image(permutation_list)
+            
+            for j in do_list:
+                reward_sum_list[j].append(reward_list[j])
+                
+                prev_state, prev_other_state,prev_action, prev_log_prob = pending_transitions_decider[j]
+                pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action, prev_log_prob,reward_list[j])
+
+                if model_action[j]:
+                    state,action=pending_transitions_buffer_switcher[j]
+                    pending_transitions_buffer_switcher[j]=(state,action,reward_list[j],done_list[j])
+                else:
+                    state,action,next_state=pending_transitions_local_switcher[j]
+                    pending_transitions_local_switcher[j]=(state,action,next_state,reward_list[j],done_list[j])
+            
+            done=all(done_list)
+            step+=1
+            # print(f"Decider: {pending_transitions_decider}\n Local_switcher: {pending_transitions_local_switcher}\n Buffer_switcher: {pending_transitions_buffer_switcher}")
 
             if step%TRAIN_PER_STEP==0:
                 update(
@@ -1161,7 +1178,8 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
         update(
             decider=decider,
             local_switcher=local_switcher,
-            buffer_switcher=buffer_switcher
+            buffer_switcher=buffer_switcher,
+            show=True
         )  
         save(
             decider=decider,
