@@ -14,11 +14,11 @@ import os
 import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=20
+DONE_REWARD=2000
 GAMMA=0.998
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=20
-ACTOR_LR=1e-5
+ACTOR_LR=1e-4
 ACTOR_LR_MIN=1e-6
 CRITIC_LR=1e-3
 CRITIC_LR_MIN=1e-5
@@ -28,7 +28,7 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-SHOW_IMAGE=False
+SHOW_IMAGE=True
 
 
 PAIR_WISE_REWARD=.2
@@ -47,8 +47,8 @@ MODEL_NAME="(7).pth"
 MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
 
 
-BATCH_SIZE=5
-EPSILON=0.9
+BATCH_SIZE=50
+EPSILON=0.5
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
 AGENT_EPOCHS=5
@@ -107,9 +107,6 @@ def selective_load_state_dict(source_model, target_model, layer_mapping):
     # 加载更新后的state_dict
     target_model.load_state_dict(new_state_dict, strict=False)
     return target_model
-
-
-
 
 
 class fen_model(nn.Module):
@@ -175,6 +172,7 @@ class Buffer_switcher_model(nn.Module):
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
         self.fc2=nn.Linear(hidden_size2,action_num)
+        self.bn=nn.BatchNorm1d(hidden_size2)
     
     def forward(self,image,outsider):
         image_fragments=[
@@ -196,6 +194,7 @@ class Buffer_switcher_model(nn.Module):
         feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
         out=self.relu(out)
+        out=self.bn(out)
         out=self.dropout(out)
         out=self.fc2(out)
         return out
@@ -256,71 +255,6 @@ class Local_switcher_model(nn.Module):
 
 
 
-
-
-# class critic_model(nn.Module):
-#     def __init__(self,
-#                  picture_size,
-#                  outsider_size,
-#                  patch_size,
-#                  encoder_layer_num,
-#                  n_head,
-#                  transformer_out_size,
-#                  output_channel,
-#                  unet_hidden,
-#                  encoder_hidden,
-#                  critic_hidden,
-#                  dropout=0.1):
-#         super().__init__()
-#         # self.local_fen=Vit.VisionTransformer(
-#         #     picture_size=picture_size,
-#         #     patch_size=patch_size,
-#         #     encoder_layer_num=encoder_layer_num,
-#         #     n_head=n_head,
-#         #     out_size=transformer_out_size,
-#         #     output_channel=output_channel,
-#         #     unet_hidden=unet_hidden,
-#         #     encoder_hidden=encoder_hidden,
-#         #     dropout=dropout
-#         # )
-#         num_patches=(outsider_size[2]*outsider_size[3]//(patch_size**2)+picture_size[2]*picture_size[3]//(patch_size**2))
-#         self.local_fen=Vit.UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
-#         self.image_embedding=Vit.PictureEmbedding(picture_size=picture_size,patch_size=patch_size)
-#         self.outsider_embedding=Vit.PictureEmbedding(picture_size=outsider_size,patch_size=patch_size)
-#         self.positional_embedding=Vit.PositionalEmbedding(d_model=output_channel*(patch_size**2),num_patches=num_patches)
-#         self.encoder_layers=nn.ModuleList(
-#             [
-#                 Vit.EncoderLayer((patch_size**2)*picture_size[1],encoder_hidden,n_head)
-#                 for _ in range(encoder_layer_num)
-#             ]
-#         )
-#         self.transformer_fc=nn.Linear(output_channel*(patch_size**2),1)
-#         self.fc=nn.Linear(num_patches,transformer_out_size)
-#         # self.local_fen.local_fen=nn.Identity()
-#         self.fc1=nn.Linear(transformer_out_size,critic_hidden)
-#         self.relu=nn.ReLU()
-#         self.dropout=nn.Dropout(dropout)
-#         self.fc2=nn.Linear(critic_hidden,1)
-#     def forward(self,image,outsider_piece):
-#         # transformer_output=self.local_fen(image)
-#         # image=self.local_fen(image)
-#         # outsider_piece=self.local_fen(outsider_piece)
-#         image_tensor=self.image_embedding(image)
-#         outsider_tensor=self.outsider_embedding(outsider_piece)
-#         transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
-#         transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
-#         for layer in self.encoder_layers:
-#             transformer_feature_tensor=layer(transformer_feature_tensor)
-#         feature_tensor=self.transformer_fc(transformer_feature_tensor)
-#         feature_tensor=feature_tensor.squeeze()
-#         transformer_output=self.fc(feature_tensor)
-#         x=self.fc1(transformer_output)
-#         x=self.relu(x)
-#         x=self.dropout(x)
-#         out=self.fc2(x)
-#         return out
-
-
 class env:
     def __init__(self,
                  train_x,
@@ -357,7 +291,7 @@ class env:
         for i in range(len(image_index)):
             image_raw=self.image[image_index[i]]
             permutation_raw=self.label[image_index[i]]
-            image_raw=torch.tensor(image_raw).permute(2,0,1).to(torch.float)
+            image_raw=torch.tensor(image_raw).permute(2,0,1).to(torch.float).to(DEVICE)
             image_fragments=[
                 image_raw[:,0:96,0:96],
                 image_raw[:,0:96,96:192],
@@ -384,17 +318,18 @@ class env:
             permutation_raw.insert(4,4)
             for j in range(9):
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
-            self.permutation2piece[-1]=torch.zeros(3,96,96)
+            self.permutation2piece[-1]=torch.zeros(3,96,96).to(DEVICE)
         
     def get_image(self,permutation,image_index):
-        image=torch.zeros(3,288,288)
+        image=torch.zeros(3,288,288).to(DEVICE)
         final_permutation=copy.deepcopy(permutation)
         final_permutation.insert(9//2,image_index*9+9//2)
         for i in range(9):
             image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=self.permutation2piece[final_permutation[i]]
     
         outsider_piece=self.permutation2piece[permutation[-1]]
-        return image.unsqueeze(0).to(DEVICE),outsider_piece.unsqueeze(0).to(DEVICE)
+        
+        return image.unsqueeze(0),outsider_piece.unsqueeze(0)
     
     def request_for_image(self,image_id,permutation,image_index):
         self.load_image(image_num=self.image_num,id=image_id)
@@ -466,8 +401,7 @@ class env:
             image=image.permute([1,2,0]).numpy().astype(np.uint8)
             cv2.imshow(f"Final image {i}",image)
         cv2.waitKey(1)
-        # time.sleep(10)
-        # cv2.destroyAllWindows()
+
     
     def permute(self,cur_permutation,action_index):
         new_permutation=copy.deepcopy(cur_permutation)
@@ -497,7 +431,6 @@ class env:
             initial_permutation=self.permute(initial_permutation,action_index)
         print(f"Initial permutation {initial_permutation}")
         return initial_permutation
-
 
 
 class Decider:
@@ -705,6 +638,7 @@ class Decider:
 
             torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
+            self.actor_schedular.step()
 
             for _ in range(2):
                 # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
@@ -715,19 +649,13 @@ class Decider:
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
                 self.critic_optimizer.step()
+                self.critic_schedular.step()
 
-
-            
-
-            
         if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/self.epochs}. Actor_loss: {actor_loss_sum*self.batch_size/self.epochs}")
         
         if self.entropy_weight>=ENTROPY_MIN:
             self.entropy_weight*=ENTROPY_GAMMA
         
-        self.critic_schedular.step()
-        
-        self.actor_schedular.step()
 
 class Local_switcher:
     def __init__(self,
@@ -803,16 +731,16 @@ class Local_switcher:
         i=0
         with torch.no_grad():
             while i < self.action_num:
-                if self.action_num-i<BATCH_SIZE:
+                if self.action_num-i<self.batch_size:
                     image=torch.cat(image_list[i:],dim=0).to(DEVICE)
                     # outsider=torch.cat(outsider_list[i:],dim=0).to(DEVICE)
                 else:
-                    image=torch.cat(image_list[i:i+BATCH_SIZE],dim=0).to(DEVICE)
+                    image=torch.cat(image_list[i:i+self.batch_size],dim=0).to(DEVICE)
                     # outsider=torch.cat(outsider_list[i:i+BATCH_SIZE],dim=0).to(DEVICE)
 
                 value=self.model(image)
                 value_list.append(value.squeeze(-1).to("cpu"))
-                i+=BATCH_SIZE
+                i+=self.batch_size
             
             value_list=torch.cat(value_list)
             best_action=torch.argmax(value_list).item()
@@ -873,8 +801,10 @@ class Local_switcher:
             self.optimizer.zero_grad()
             loss.float().backward()
             self.optimizer.step()
+            self.schedular.step()
             loss_sum+=loss.item()
-        self.schedular.step()
+
+        
 
         for target_param, main_param in zip(self.model.parameters(),self.main_model.parameters()):
             target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
@@ -1042,6 +972,7 @@ class Buffer_switcher:
 
             torch.nn.utils.clip_grad_norm_(self.main_model.parameters(), CLIP_GRAD_NORM)
             self.optimizer.step()
+            self.schedular.step()
 
 
 
@@ -1054,11 +985,13 @@ class Buffer_switcher:
             
         if show: print(f"Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
         
-        if self.optimizer.state_dict()["param_groups"][0]["lr"]>ACTOR_LR_MIN:
-            self.schedular.step()
+        
+        
 
         
 def update(decider,local_switcher,buffer_switcher):
+    print("Updating")
+    
     decider.update()
     local_switcher.update()
     buffer_switcher.update()
@@ -1111,7 +1044,6 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
 
         step=0; done = False ; 
         clean_memory(decider,local_switcher,buffer_switcher)
-
         while not done and step < max_step:
             state_list=[]
             do_list=[]
@@ -1213,13 +1145,13 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                 step+=1
                 # print(f"Decider: {pending_transitions_decider}\n Local_switcher: {pending_transitions_local_switcher}\n Buffer_switcher: {pending_transitions_buffer_switcher}")
 
-                if step%TRAIN_PER_STEP==0:
-                    update(
-                        decider=decider,
-                        local_switcher=local_switcher,
-                        buffer_switcher=buffer_switcher
-                    )  
-                    env.load_image(image_num=env.image_num, id=env.image_id)
+            if step%TRAIN_PER_STEP==0:
+                update(
+                    decider=decider,
+                    local_switcher=local_switcher,
+                    buffer_switcher=buffer_switcher
+                )  
+                env.load_image(image_num=env.image_num, id=env.image_id)
                     
         print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
         # print(f"Action_list: {self.action_list}")
@@ -1285,7 +1217,7 @@ if __name__ == "__main__":
         outsider_hidden_size=512,
         action_num=8
     ).to(DEVICE)
-
+    # buffer_switcher_model.load_state_dict(torch.load("outsider_switcher_pretrain.pth"))
     buffer_switcher=Buffer_switcher(
         memory_size=2000,
         model=buffer_switcher_model,
@@ -1300,6 +1232,7 @@ if __name__ == "__main__":
                                               hidden1=1024,
                                               hidden2=512,
                                               action_num=1).to(DEVICE)
+    # local_switcher_model.load_state_dict(torch.load("sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(
         memory_size=2000,
         gamma=environment.gamma,
@@ -1313,7 +1246,7 @@ if __name__ == "__main__":
     # selective_load_state_dict(pretrain_model_dict,critic,{"ef":"fen_model.ef"})
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_hori":"fen_model.contrast_fc_hori"})
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_vert":"fen_model.contrast_fc_vert"})
-
+    print(f"Device: {DEVICE}")
     run_maze(env=environment,
         decider=decider,
              local_switcher=local_switcher
