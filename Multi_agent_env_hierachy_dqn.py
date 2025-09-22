@@ -14,7 +14,7 @@ import os
 import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=2000
+DONE_REWARD=1000
 GAMMA=0.995
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=25
@@ -28,7 +28,7 @@ ACTOR_SCHEDULAR_STEP=200
 CRITIC_SCHEDULAR_STEP=100
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-SHOW_IMAGE=False
+SHOW_IMAGE=True
 
 
 PAIR_WISE_REWARD=.2
@@ -40,14 +40,14 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=True
-SWAP_NUM=[2,4,4,8]
+LOAD_MODEL=False
+SWAP_NUM=[2,3,4,8]
 MAX_STEP=[200,200,200,200]
-MODEL_NAME="(7).pth"
+MODEL_NAME="(1).pth"
 MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
 
 
-BATCH_SIZE=15
+BATCH_SIZE=20
 EPSILON=0.5
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
@@ -113,44 +113,59 @@ def selective_load_state_dict(source_model, target_model, layer_mapping):
 
 
 class fen_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2):
-        super(fen_model,self).__init__()
-        self.ef=efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1536,512)
-        self.contrast_fc_hori=nn.Linear(1024,512)
-        self.contrast_fc_vert=nn.Linear(1024,512)
-        self.fc1=nn.Linear(512*12,hidden_size1)
-        self.relu=nn.ReLU()
-        self.bn=nn.BatchNorm1d(hidden_size1)
-        self.do=nn.Dropout1d(p=0.1)
-        self.fc2=nn.Linear(hidden_size1,hidden_size2)
-        self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
-        self.vert_set=[(i,i+3) for i in range(3*2)]
-    
-    def forward(self,image):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
-        
-        image_tensor=[self.ef(image_fragments[i]) for i in range(len(image_fragments))]
+    def __init__(self, hidden_size1, hidden_size2):
+        super(fen_model, self).__init__()
+        self.ef = efficientnet_b3(weights="DEFAULT")
+        self.ef.classifier = nn.Linear(1536, 1024)
 
-        hori_tensor=torch.cat([self.contrast_fc_hori(torch.cat([image_tensor[self.hori_set[i][0]],image_tensor[self.hori_set[i][1]]],dim=-1)) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([self.contrast_fc_vert(torch.cat([image_tensor[self.vert_set[i][0]],image_tensor[self.vert_set[i][1]]],dim=-1)) for i in range(len(self.vert_set))],dim=-1)
-        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
-        x=self.do(feature_tensor)
-        x=self.fc1(x)
-        x=self.do(x)
-        x=self.bn(x)
-        x=self.relu(x)
-        x=self.fc2(x)
+        self.contrast_fc_hori = nn.Linear(2048, 1024)
+        self.contrast_fc_vert = nn.Linear(2048, 1024)
+
+        self.fc1 = nn.Linear(1024*12, hidden_size1)
+        self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm1d(hidden_size1)
+        self.do = nn.Dropout1d(p=0.1)
+        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
+
+        # 定义 index 对
+        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
+        self.vert_set = [(i, i+3) for i in range(6)]
+
+    def forward(self, image):
+        B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
+
+        # ---- 1. 切片并 reshape 成 batch ----
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
+        # patches: (B, C, 3, 3, 96, 96)
+        patches = patches.permute(0,2,3,1,4,5).contiguous()
+        patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
+
+        # ---- 2. 一次性送进 ef ----
+        feats = self.ef(patches)   # (B*9, 1024)
+        feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
+
+        # ---- 3. 构建横向对 ----
+        hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
+        hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
+
+        # ---- 4. 构建纵向对 ----
+        vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
+        vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
+
+        # ---- 5. 拼接所有特征 ----
+        feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
+        feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
+
+        # ---- 6. 全连接部分 ----
+        x = self.do(feature_tensor)
+        x = self.fc1(x)
+        x = self.do(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+
         return x
 
 
@@ -439,52 +454,36 @@ class env:
 class Decider:
     def __init__(self,
                  memory_size,
-                 actor,
-                 critic,
+                 model,
                  env,
                  action_num,
                  batch_size,
-                 entropy_weight,
-                 train_epoch
+                 train_epoch,
+                 tau=1e-3
                  ):
         self.memory=[]
         self.memory_size=memory_size
         self.memory_counter=0
         self.trace_start_point=0
-        self.actor_model=actor
-        self.critic_model=critic
-        self.actor_optimizer=torch.optim.Adam(self.actor_model.parameters(),lr=ACTOR_LR,eps=1e-8)
-        self.critic_optimizer=torch.optim.Adam(self.critic_model.parameters(),lr=CRITIC_LR,eps=1e-8)
-        self.actor_schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer=self.actor_optimizer,
+        self.model=model
+        self.main_model=copy.deepcopy(self.model)
+        self.optimizer=torch.optim.Adam(self.main_model.parameters(),lr=CRITIC_LR,eps=1e-8)
+
+        self.schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer=self.optimizer,
             T_0=10,
             T_mult=1,
             eta_min=1e-6,
             last_epoch=-1
         )
-        self.critic_schedular=torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer=self.critic_optimizer,
-            T_0=10,
-            T_mult=1,
-            eta_min=1e-5,
-            last_epoch=-1
-        )
 
+        self.tau=tau
         self.action_num=action_num
         self.env=env
         self.batch_size=batch_size
-        self.entropy_weight=entropy_weight
+
         
         self.epochs=train_epoch
-
-    
-    def epsilon_greedy(self,action):
-        prob=random.random()
-        if prob>self.env.epsilon:
-            return action
-        else:
-            epsilon_action=(action+random.randint(1,self.action_num))%self.action_num
-            return epsilon_action
     
     def recording_memory(self,
                          image_id,
@@ -493,13 +492,12 @@ class Decider:
                          state
                          ,other_state
                          ,action
-                         ,log_prob
                          ,reward
                          ,next_state
                          ,next_other_state
                          ,done):
         # print("Recording decider")
-        memory={"Image_id":image_id,"Image_index":image_index,"Other_image_index":other_image_index,"Log_prob":log_prob,"State":state,"Other_state":other_state,"Action": action,"Reward":reward,"Next_state":next_state,"Next_other_state":next_other_state,"Done": done}
+        memory={"Image_id":image_id,"Image_index":image_index,"Other_image_index":other_image_index,"State":state,"Other_state":other_state,"Action": action,"Reward":reward,"Next_state":next_state,"Next_other_state":next_other_state,"Done": done}
         if len(self.memory)<self.memory_size:
             self.memory.append(memory)
         else:
@@ -509,53 +507,29 @@ class Decider:
     def clean_memory(self):
         self.memory=[]
         self.memory_counter=0
-        self.trace_start_point=self.memory_counter
+
+    def epsilon_greedy(self,action):
+        prob=random.random()
+        if prob>self.env.epsilon:
+            return action
+        else:
+            epsilon_action=(action+random.randint(1,self.action_num))%self.action_num
+            return epsilon_action
+        
     def act(self,current_image,other_image,outsider_piece):
         with torch.no_grad():
-            self.actor_model.eval()
-            prob=nn.Softmax(dim=-1)(self.actor_model(current_image,other_image,outsider_piece))
-            dist=torch.distributions.Categorical(prob)
-            action=dist.sample()
-            action_log_prob=dist.log_prob(action).detach()
-        # action=self.epsilon_greedy(action.item())
-        return action,action_log_prob
+            self.model.eval()
+            action=torch.argmax(self.model(current_image,other_image,outsider_piece),dim=-1)
+            action=self.epsilon_greedy(action=action.item())
+
+        return action
 
     def update(self,show=False):
-        # print("Updating decider")
-
-        eps=0.2
-        R=[0 for _ in range(self.env.image_num)]
-        R_start=[True for _ in range(self.env.image_num)]
-        # R_track=[[] for _ in range(self.image_num)]
-        self.critic_model.eval()
-        i=(self.memory_counter-1)%self.memory_size
-
-        while i!=(self.trace_start_point-1)%self.memory_size:
-            image_index=self.memory[i]["Image_index"]
-            done=self.memory[i]["Done"]
-            reward=self.memory[i]["Reward"]
-            if R_start[image_index]:
-                image_id=self.memory[i]["Image_id"]
-                R_start[image_index]=False
-                current_image,current_outsider=self.env.request_for_image(image_id,self.memory[i]["State"],image_index)
-                other_image,_=self.env.request_for_image(image_id,self.memory[i]["Other_state"],self.memory[i]["Other_image_index"])
-                value=self.critic_model(current_image,other_image,current_outsider)
-                R[image_index]=value.item()
-            else:
-                R[image_index]=self.env.gamma*R[image_index]*(1-done)+reward+PANELTY
-            # R_track[image_index].append(R[image_index])
-            self.memory[i]["Return"]=R[image_index]
-            i=(i-1)%self.memory_size
-        i=(self.memory_counter-1)%self.memory_size
-
-
-
         order=list(range(len(self.memory)))
         random.shuffle(order)
-        self.actor_model.train()
-        self.critic_model.train()
-        critic_loss_sum=[]
-        actor_loss_sum=[]
+        self.model.train()
+        self.main_model.train()
+        loss_sum=[]
 
         for i in range(self.epochs):
             if i*self.batch_size>=len(order):
@@ -568,14 +542,13 @@ class Decider:
             states=[]
             outsider_pieces=[]
             other_images=[]
-            ret=[]
             actions=[]
             next_states=[]
             next_outsiders=[]
             next_other_images=[]
             reward=[]
             done=[]
-            old_log_probs=[]
+
             
             for a in range(len(sample_dicts)):
 
@@ -586,8 +559,6 @@ class Decider:
                 outsider_pieces.append(current_outsider)
                 other_images.append(other_image)
 
-                
-                old_log_probs.append(sample_dicts[a]["Log_prob"])
 
                 actions.append(sample_dicts[a]["Action"])
                 next_image,next_outsider_piece=self.env.request_for_image(image_id=sample_dicts[a]["Image_id"],permutation=sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
@@ -598,17 +569,17 @@ class Decider:
                 
                 reward.append(sample_dicts[a]["Reward"])
                 done.append(sample_dicts[a]["Done"])
-                ret.append(sample_dicts[a]["Return"])
+
 
                     
             
             state_tensor=torch.cat(states,dim=0)
             if state_tensor.size(0)==1:
-                self.critic_model.eval()
-                self.actor_model.eval()
+                self.model.eval()
+                self.main_model.eval()
             else:
-                self.critic_model.train()
-                self.actor_model.train()
+                self.model.train()
+                self.main_model.train()
 
             outsider_tensor=torch.cat(outsider_pieces,dim=0)
             other_image_tensor=torch.cat(other_images,dim=0)
@@ -617,56 +588,39 @@ class Decider:
             next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
             next_other_image_tensor=torch.cat(next_other_images,dim=0)
 
-            probs=nn.Softmax(dim=-1)(self.actor_model(state_tensor,other_image_tensor,outsider_tensor))
+
             
             action_tensor=torch.tensor(actions).to(DEVICE).unsqueeze(-1)
-            selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
-            log_probs=torch.log(selected_probs)
-            old_log_probs=torch.cat(old_log_probs,dim=0)
+
+
             reward=torch.tensor(reward,dtype=torch.float32).to(DEVICE).unsqueeze(-1)
             done=torch.tensor(done,dtype=torch.float32).to(DEVICE).unsqueeze(-1)
-            entropy = torch.distributions.Categorical(probs).entropy()
-            ret=torch.tensor(ret,dtype=torch.float32).to(DEVICE).unsqueeze(-1)
-            
 
-            pred_ret=self.critic_model(state_tensor,other_image_tensor,outsider_tensor)
+            q_main=self.main_model(state_tensor,other_image_tensor,outsider_tensor).gather(1,action_tensor)
             
-            advantage=ret-pred_ret.detach()
-            if advantage.size(0)>1:
-                advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
-            ratio=torch.exp(log_probs-old_log_probs)
-            actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
+            q_next=self.model(next_state_tensor,next_other_image_tensor,next_outsiders_tensor).max(1)[0].unsqueeze(-1).detach()
+            q_target=reward+self.env.gamma*q_next*(1-done)
 
-            actor_loss_sum.append(actor_loss.item())
+            loss=nn.MSELoss()(q_main,q_target)
+            loss_sum.append(loss.item())
 
-            self.actor_optimizer.zero_grad()
+            self.optimizer.zero_grad()
             
-            actor_loss.backward()
+            loss.backward()
 
             # print(f"Decider_actor: {has_any_gradient(self.actor_model)}")
 
-            torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
-            self.actor_optimizer.step()
+            torch.nn.utils.clip_grad_norm_(self.main_model.parameters(), CLIP_GRAD_NORM)
+            self.optimizer.step()
+            self.schedular.step() 
             
 
-            for _ in range(1):
-                # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
-                pred_ret=self.critic_model(state_tensor,other_image_tensor,outsider_tensor)
-                bellman_ret=self.env.gamma*(1-done)*self.critic_model(next_state_tensor,next_other_image_tensor,next_outsiders_tensor)+reward
-                critic_loss=nn.MSELoss()(pred_ret,bellman_ret)
-                critic_loss_sum.append(critic_loss.item())
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                # print(f"Decider_critic: {has_any_gradient(self.critic_model)}")
-                self.critic_optimizer.step()
-                
+            for target_param, main_param in zip(self.model.parameters(),self.main_model.parameters()):
+                target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
 
-        if show and len(actor_loss_sum)>0 and len(critic_loss_sum)>0 : print(f"Decider\nCritic loss: {np.mean(critic_loss_sum)}. Actor_loss: {np.mean(actor_loss_sum)}")
+        if show and len(loss_sum)>0 : print(f"Decider loss: {np.mean(loss_sum)}.")
             
-        if self.entropy_weight>=ENTROPY_MIN:
-            self.entropy_weight*=ENTROPY_GAMMA
-        self.actor_schedular.step() 
-        self.critic_schedular.step()
+
         
 
 class Local_switcher:
@@ -975,9 +929,8 @@ class Buffer_switcher:
 
             q_main=self.main_model(state_tensor,outsider_tensor).gather(1,action_tensor)
             
-            with torch.no_grad():
-                q_next=self.model(next_state_tensor,next_outsiders_tensor).max(1)[0].unsqueeze(-1)
-                q_target=reward+self.env.gamma*q_next*(1-done)
+            q_next=self.model(next_state_tensor,next_outsiders_tensor).max(1)[0].unsqueeze(-1).detach()
+            q_target=reward+self.env.gamma*q_next*(1-done)
             
             loss=nn.MSELoss()(q_main,q_target)
             actor_loss_sum.append(loss.item())
@@ -1021,14 +974,14 @@ def clean_memory(decider,local_switcher,buffer_switcher):
     buffer_switcher.clean_memory()
     
 def save(decider,local_switcher,buffer_switcher):
-    torch.save(decider.actor_model.state_dict(),os.path.join("Decider_actor"+MODEL_NAME))
-    torch.save(decider.critic_model.state_dict(),os.path.join("Decider_critic"+MODEL_NAME))
+    torch.save(decider.model.state_dict(),os.path.join("Decider"+MODEL_NAME))
+
     torch.save(buffer_switcher.model.state_dict(),os.path.join("Buffer_switcher"+MODEL_NAME))
     torch.save(local_switcher.model.state_dict(),os.path.join("Local_switcher"+MODEL_NAME))
 
 def load(decider,local_switcher,buffer_switcher):
-    decider.actor_model.load_state_dict(torch.load(os.path.join("Decider_actor"+MODEL_NAME)))
-    decider.critic_model.load_state_dict(torch.load(os.path.join("Decider_critic"+MODEL_NAME)))
+    decider.model.load_state_dict(torch.load(os.path.join("Decider"+MODEL_NAME)))
+    decider.main_model=copy.deepcopy(decider.model)
     buffer_switcher.model.load_state_dict(torch.load(os.path.join("Buffer_switcher"+MODEL_NAME)))
     buffer_switcher.main_model=copy.deepcopy(buffer_switcher.model)
     local_switcher.model.load_state_dict(torch.load(os.path.join("Local_switcher"+MODEL_NAME)))
@@ -1066,7 +1019,6 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
         pending_transitions_decider = {j: None for j in range(env.image_num)}
         pending_transitions_local_switcher= {j: None for j in range(env.image_num)}
         pending_transitions_buffer_switcher={j: None for j in range(env.image_num)}
-        decider.trace_start_point=decider.memory_counter
         while not done and step < max_step:
             state_list=[]
             do_list=[]
@@ -1083,14 +1035,13 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                 perm_with_buf=permutation_list[j]+buffer
                 do_list.append(j)
                 if pending_transitions_decider[j] is not None:
-                    prev_state, prev_other_state,prev_action, prev_log_prob,prev_reward = pending_transitions_decider[j]
+                    prev_state, prev_other_state,prev_action,prev_reward = pending_transitions_decider[j]
                     decider.recording_memory(image_id=env.image_id
                                                         ,image_index=j,
                                                         other_image_index=(j+1)%env.image_num
                                                         ,state=prev_state
                                                         ,other_state=prev_other_state
                                                         ,action= prev_action
-                                                        ,log_prob=prev_log_prob
                                                         ,reward= prev_reward
                                                         ,next_state= perm_with_buf
                                                         ,next_other_state=permutation_list[(j+1)%env.image_num]
@@ -1125,8 +1076,8 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                 state_list.append(copy.deepcopy(perm_with_buf))
                 image,outsider=env.get_image(perm_with_buf,image_index=j)
                 other_image,_=env.get_image(permutation_list[(j+1)%env.image_num],image_index=(j+1)%env.image_num)
-                decider_action,decider_log_prob=decider.act(current_image=image,outsider_piece=outsider,other_image=other_image)
-                pending_transitions_decider[j]=(permutation_list[j],permutation_list[(j+1)%env.image_num],decider_action,decider_log_prob)
+                decider_action=decider.act(current_image=image,outsider_piece=outsider,other_image=other_image)
+                pending_transitions_decider[j]=(permutation_list[j],permutation_list[(j+1)%env.image_num],decider_action)
                 
                 model_action[j]=decider_action
 
@@ -1153,8 +1104,8 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
             for j in do_list:
                 reward_sum_list[j].append(reward_list[j])
                 
-                prev_state, prev_other_state,prev_action, prev_log_prob = pending_transitions_decider[j]
-                pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action, prev_log_prob,reward_list[j])
+                prev_state, prev_other_state,prev_action, = pending_transitions_decider[j]
+                pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action,reward_list[j])
 
                 if model_action[j]:
                     state,action=pending_transitions_buffer_switcher[j]
@@ -1215,30 +1166,19 @@ if __name__ == "__main__":
         hidden_2=512,
         action_num=2
     ).to(DEVICE)
-
-    decider_critic=Decider_model(
-        fen_model_hidden1=1024,
-        fen_model_hidden2=512,
-        outsider_hidden=512,
-        hidden_1=1024,
-        hidden_2=512,
-        action_num=1
-    ).to(DEVICE)
     
     decider=Decider(memory_size=2000,
-                    actor=decider_actor,
-                    critic=decider_critic,
+                    model=decider_actor,
                     env=environment,
                     action_num=2,
                     batch_size=BATCH_SIZE,
-                    entropy_weight=ENTROPY_WEIGHT,
                     train_epoch=AGENT_EPOCHS
                     )
     
     buffer_switcher_model=Buffer_switcher_model(
-        hidden_size1=1024,
-        hidden_size2=512,
-        outsider_hidden_size=512,
+        hidden_size1=2048,
+        hidden_size2=1024,
+        outsider_hidden_size=1024,
         action_num=8
     ).to(DEVICE)
     buffer_switcher_model.load_state_dict(torch.load("outsider_switcher_pretrain.pth"))
@@ -1251,10 +1191,10 @@ if __name__ == "__main__":
         env=environment
     )
 
-    local_switcher_model=Local_switcher_model(fen_model_hidden1=1024,
-                                              fen_model_hidden2=512,
-                                              hidden1=1024,
-                                              hidden2=512,
+    local_switcher_model=Local_switcher_model(fen_model_hidden1=2048,
+                                              fen_model_hidden2=1024,
+                                              hidden1=2048,
+                                              hidden2=1024,
                                               action_num=1).to(DEVICE)
     local_switcher_model.load_state_dict(torch.load("sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(
