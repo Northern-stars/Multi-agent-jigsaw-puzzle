@@ -15,6 +15,7 @@ import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
+CONSISTENCY_REWARD=200
 GAMMA=0.995
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=25
@@ -33,7 +34,8 @@ SHOW_IMAGE=True
 
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
-CONSISTENCY_REWARD=.2
+CONSISTENCY_REWARD_WEIGHT=.5
+
 PANELTY=-0.5
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
@@ -41,15 +43,15 @@ ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[2,3,4,8]
+SWAP_NUM=[4,4,4,8]
 MAX_STEP=[200,200,200,200]
 MODEL_NAME="(1).pth"
-MODEL_PATH=os.path.join("DQN"+MODEL_NAME)
+MODEL_PATH=os.path.join("model/DQN"+MODEL_NAME)
 
 
 BATCH_SIZE=20
-EPSILON=0.5
-EPSILON_GAMMA=0.995
+EPSILON=0.3
+EPSILON_GAMMA=0.998
 EPSILON_MIN=0.1
 AGENT_EPOCHS=5
 
@@ -172,49 +174,53 @@ class fen_model(nn.Module):
 class Buffer_switcher_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
         super(Buffer_switcher_model,self).__init__()
-        self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
-        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
-        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
-        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
-        self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
+        self.fen_model=fen_model(hidden_size1,hidden_size1)
         # state_dict=torch.load("pairwise_pretrain.pth")
         # state_dict_replace = {
         # k: v 
         # for k, v in state_dict.items() 
         # if k.startswith("ef.")
         # }
-        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
-        # print("Critic missing keys hori",load_result_hori.missing_keys)
-        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Actor missing keys hori",load_result_hori.missing_keys)
+        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
+        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
+        self.outsider_fc=nn.Linear(outsider_hidden_size,outsider_hidden_size)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
-        self.fc2=nn.Linear(hidden_size2,action_num)
         self.bn=nn.BatchNorm1d(hidden_size2)
+        self.fc2=nn.Linear(hidden_size2,action_num)
     
-    def forward(self,image,outsider):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
+    def forward(self,image,outsider_piece):
+        # image_fragments=[
+        #     image[:,:,0:96,0:96],
+        #     image[:,:,0:96,96:192],
+        #     image[:,:,0:96,192:288],
+        #     image[:,:,96:192,0:96],
+        #     image[:,:,96:192,96:192],
+        #     image[:,:,96:192,192:288],
+        #     image[:,:,192:288,0:96],
+        #     image[:,:,192:288,96:192],
+        #     image[:,:,192:288,192:288]
+        # ]
+        central_image=image[:,:,96:192,96:192]
         image_input=self.fen_model(image)
-        outsider_input=self.outsider_fen_model(outsider)
-        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
-        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
+        outsider_input=self.outsider_fen_model(outsider_piece)
+        # outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
+        outsider_image_tensor=self.outsider_fen_model(central_image)
+        outsider_tensor=self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor],dim=-1)) 
+        # outsider_tensor=self.outsider_contrast_fc(torch.cat([outsider_input,image_input],dim=-1))
         outsider_tensor=self.outsider_fc(outsider_tensor)
         feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
         out=self.fc1(feature_tensor)
-        out=self.relu(out)
-        out=self.bn(out)
         out=self.dropout(out)
+        out=self.bn(out)
+        out=self.relu(out)
         out=self.fc2(out)
+        # out=nn.functional.sigmoid(out)
         return out
 
 class Decider_model(nn.Module):
@@ -362,7 +368,8 @@ class env:
         for i in range(len(permutation_list)):
             permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
         done_list=[0 for i in range(len(permutation_copy))]
-        reward_list=[0 for i in range(len(permutation_copy))]
+        local_reward_list=[0 for i in range(len(permutation_copy))]
+        consistency_reward_list=[0 for i in range(len(permutation_copy))]
         edge_length=int(len(permutation_copy[0])**0.5)
         piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
@@ -373,10 +380,10 @@ class env:
 
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
-                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
-                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
             # print(piece_range)
@@ -384,30 +391,25 @@ class env:
             for j in range(piece_num):
                 if permutation_copy[i][j]!=-1:
                     piece_range[permutation_copy[i][j]//piece_num]+=1
-                    reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
+                    local_reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
             
             max_piece=piece_range[i]#Consistancy reward
 
-            weight=0.2
-            if -1 in permutation_copy[i]:
-                weight+=0.5*CONSISTENCY_REWARD
-            if max_piece==piece_num-3:
-                weight+=1*CONSISTENCY_REWARD
-            elif max_piece==piece_num-2:
-                weight+=2*CONSISTENCY_REWARD
-            elif max_piece==piece_num-1:
-                weight+=3*CONSISTENCY_REWARD
-            elif max_piece==piece_num:
-                weight+=5*CONSISTENCY_REWARD
+            
+            # if -1 in permutation_copy[i]:
+            #     consistency_reward_list[j]+=0.5*CONSISTENCY_REWARD
+            consistency_reward_list[i]=max_piece*CONSISTENCY_REWARD_WEIGHT
+            if max_piece==piece_num:
+                consistency_reward_list[i]=CONSISTENCY_REWARD
 
-            reward_list[i]*=weight
-            reward_list[i]+=PANELTY
+            local_reward_list[i]+=PANELTY
+            consistency_reward_list[i]+=PANELTY
             start_index=min(permutation_copy[i])//piece_num*piece_num#Done reward
             if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
-                reward_list[i]=DONE_REWARD
-        return reward_list,done_list
+                local_reward_list[i]=DONE_REWARD
+        return local_reward_list,consistency_reward_list,done_list
         #Change after determined
 
 
@@ -974,17 +976,17 @@ def clean_memory(decider,local_switcher,buffer_switcher):
     buffer_switcher.clean_memory()
     
 def save(decider,local_switcher,buffer_switcher):
-    torch.save(decider.model.state_dict(),os.path.join("Decider"+MODEL_NAME))
+    torch.save(decider.model.state_dict(),os.path.join("model/Decider"+MODEL_NAME))
 
-    torch.save(buffer_switcher.model.state_dict(),os.path.join("Buffer_switcher"+MODEL_NAME))
-    torch.save(local_switcher.model.state_dict(),os.path.join("Local_switcher"+MODEL_NAME))
+    torch.save(buffer_switcher.model.state_dict(),os.path.join("model/Buffer_switcher"+MODEL_NAME))
+    torch.save(local_switcher.model.state_dict(),os.path.join("model/Local_switcher"+MODEL_NAME))
 
 def load(decider,local_switcher,buffer_switcher):
-    decider.model.load_state_dict(torch.load(os.path.join("Decider"+MODEL_NAME)))
+    decider.model.load_state_dict(torch.load(os.path.join("model/Decider"+MODEL_NAME)))
     decider.main_model=copy.deepcopy(decider.model)
-    buffer_switcher.model.load_state_dict(torch.load(os.path.join("Buffer_switcher"+MODEL_NAME)))
+    buffer_switcher.model.load_state_dict(torch.load(os.path.join("model/Buffer_switcher"+MODEL_NAME)))
     buffer_switcher.main_model=copy.deepcopy(buffer_switcher.model)
-    local_switcher.model.load_state_dict(torch.load(os.path.join("Local_switcher"+MODEL_NAME)))
+    local_switcher.model.load_state_dict(torch.load(os.path.join("model/Local_switcher"+MODEL_NAME)))
     local_switcher.main_model=copy.deepcopy(local_switcher.model)
 
 
@@ -1015,7 +1017,7 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
         last_actions=[-1 for _ in range(env.image_num)]
 
         step=0; done = False ; 
-        clean_memory(decider,local_switcher,buffer_switcher)
+        # clean_memory(decider,local_switcher,buffer_switcher)
         pending_transitions_decider = {j: None for j in range(env.image_num)}
         pending_transitions_local_switcher= {j: None for j in range(env.image_num)}
         pending_transitions_buffer_switcher={j: None for j in range(env.image_num)}
@@ -1023,7 +1025,7 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
             state_list=[]
             do_list=[]
             model_action=[0 for j in range(env.image_num)] 
-            last_reward_list,_=env.get_reward(permutation_list)
+            last_local_reward_list,last_consistency_reward_list,_=env.get_reward(permutation_list)
             
             
             
@@ -1096,23 +1098,23 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                     permutation_list[j]=copy.deepcopy(permutation_)
                     
                 
-            reward_list, done_list=env.get_reward(permutation_list)
+            local_reward_list,consistency_reward_list, done_list=env.get_reward(permutation_list)
 
             if SHOW_IMAGE:
                 env.show_image(permutation_list)
             
             for j in do_list:
-                reward_sum_list[j].append(reward_list[j])
+                reward_sum_list[j].append(local_reward_list[j]+consistency_reward_list[j])
                 
                 prev_state, prev_other_state,prev_action, = pending_transitions_decider[j]
-                pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action,reward_list[j])
+                pending_transitions_decider[j]=(prev_state, prev_other_state,prev_action,local_reward_list[j]+consistency_reward_list[j])
 
                 if model_action[j]:
                     state,action=pending_transitions_buffer_switcher[j]
-                    pending_transitions_buffer_switcher[j]=(state,action,reward_list[j],done_list[j])
+                    pending_transitions_buffer_switcher[j]=(state,action,consistency_reward_list[j],done_list[j])
                 else:
                     state,action,next_state=pending_transitions_local_switcher[j]
-                    pending_transitions_local_switcher[j]=(state,action,next_state,reward_list[j],done_list[j])
+                    pending_transitions_local_switcher[j]=(state,action,next_state,local_reward_list[j],done_list[j])
             
             done=all(done_list)
             step+=1
@@ -1126,10 +1128,47 @@ def run_maze(env,decider,buffer_switcher,local_switcher,load_flag=True,epoch_num
                     show=False
                 )  
                 env.load_image(image_num=env.image_num, id=env.image_id)
-                    
+        for j in range(env.image_num):
+            if pending_transitions_decider[j] is not None:
+                prev_state, prev_other_state,prev_action,prev_reward = pending_transitions_decider[j]
+                decider.recording_memory(image_id=env.image_id
+                                                    ,image_index=j,
+                                                    other_image_index=(j+1)%env.image_num
+                                                    ,state=prev_state
+                                                    ,other_state=prev_other_state
+                                                    ,action= prev_action
+                                                    ,reward= prev_reward
+                                                    ,next_state= perm_with_buf
+                                                    ,next_other_state=permutation_list[(j+1)%env.image_num]
+                                                    , done=done_list[j])
+                pending_transitions_decider[j]=None
+
+            if pending_transitions_local_switcher[j] is not None:
+                # print(pending_transitions_local_switcher[j])
+                prev_state, prev_action, prev_next_state,prev_reward ,prev_done= pending_transitions_local_switcher[j]
+                local_switcher.recording_memory(image_id=env.image_id
+                                                ,image_index=j
+                                                ,state=prev_state
+                                                ,action= prev_action
+                                                ,reward= prev_reward
+                                                ,next_state= prev_next_state
+                                                , done=prev_done)
+                pending_transitions_local_switcher[j]=None
+
+            if pending_transitions_buffer_switcher[j] is not None:
+                state, action, reward,done = pending_transitions_buffer_switcher[j]
+                buffer_switcher.recording_memory(image_id=env.image_id
+                                                    ,image_index=j
+                                                    ,state=state
+                                                    ,action= action
+                                                    ,reward= reward
+                                                    ,next_state= perm_with_buf
+                                                    , done=done)
+                pending_transitions_buffer_switcher[j]=None   
         print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
         # print(f"Action_list: {self.action_list}")
         print(f"Permutation list: {permutation_list}")
+
         if env.epsilon>EPSILON_MIN:
             env.epsilon*=EPSILON_GAMMA
         update(
@@ -1159,15 +1198,16 @@ if __name__ == "__main__":
                     epsilon_gamma=EPSILON_GAMMA)
     # critic=critic_model(hidden_size1=1024,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
     decider_actor=Decider_model(
-        fen_model_hidden1=1024,
-        fen_model_hidden2=512,
-        outsider_hidden=512,
+        fen_model_hidden1=2048,
+        fen_model_hidden2=1024,
+        outsider_hidden=1024,
         hidden_1=1024,
         hidden_2=512,
         action_num=2
     ).to(DEVICE)
+    decider_actor.outsider_fen.load_state_dict(torch.load("model/decider_outsider_fen.pth"))
     
-    decider=Decider(memory_size=2000,
+    decider=Decider(memory_size=1000,
                     model=decider_actor,
                     env=environment,
                     action_num=2,
@@ -1181,9 +1221,9 @@ if __name__ == "__main__":
         outsider_hidden_size=1024,
         action_num=8
     ).to(DEVICE)
-    buffer_switcher_model.load_state_dict(torch.load("outsider_switcher_pretrain.pth"))
+    buffer_switcher_model.load_state_dict(torch.load("model/outsider_switcher_pretrain.pth"))
     buffer_switcher=Buffer_switcher(
-        memory_size=2000,
+        memory_size=1000,
         model=buffer_switcher_model,
         action_num=8,
         batch_size=BATCH_SIZE,
@@ -1196,9 +1236,9 @@ if __name__ == "__main__":
                                               hidden1=2048,
                                               hidden2=1024,
                                               action_num=1).to(DEVICE)
-    local_switcher_model.load_state_dict(torch.load("sd2rl_pretrain.pth"))
+    local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(
-        memory_size=2000,
+        memory_size=1000,
         gamma=environment.gamma,
         batch_size=BATCH_SIZE,
         action_num=28,
