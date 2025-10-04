@@ -11,6 +11,7 @@ from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
 from Vit import VisionTransformer
+from tqdm import tqdm
 
 
 
@@ -31,7 +32,7 @@ test_y=np.load(test_y_path)
 
 
 BATCH_SIZE=25
-MODEL_NAME="outsider_model.pth"
+MODEL_NAME="model/outsider_model.pth"
 
 
 class imageData(Dataset):
@@ -79,21 +80,89 @@ class imageData(Dataset):
         # image_fragments[label]=outsider_image_fragments[label]
         random_number=random.randint(0,4)
         if random_number==0:
-            return image,random_number
+            return image,4
         image=torch.zeros(3,288,288)
+        swap_index=[]
         for i in range(random_number):
             random_index=random.randint(0,8)
-            image_fragments[random_index]=outsider_image_fragments[random_index]
+            if random_index not in swap_index:
+                swap_index.append(random_index)
+                image_fragments[random_index]=outsider_image_fragments[random_index]
         
         for i in range(9):
             image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=image_fragments[i]
         
         # return image,label
-        return image,random_number
+        return image,0.5*(8-len(swap_index))
 
 
 train_data=imageData(train_x,train_y)
 train_dataloader=DataLoader(train_data,batch_size=BATCH_SIZE,shuffle=True,drop_last=True)
+
+class central_fen_model(nn.Module):
+    def __init__(self, hidden_size1,hidden_size2,dropout=0.1):
+        super().__init__()
+        self.ef=efficientnet_b0()
+        self.ef.classifier=nn.Linear(1280,hidden_size1)
+        self.contract_fc=nn.Linear(2*hidden_size1,hidden_size1)
+        self.fc1=nn.Linear(8*hidden_size1,hidden_size1)
+        self.relu=nn.ReLU()
+        self.bn=nn.BatchNorm1d(hidden_size1)
+
+        self.out_layer=nn.Sequential(
+            nn.Linear(hidden_size1,hidden_size2),
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(hidden_size2,hidden_size2)
+        )
+    
+    def forward(self, image):
+        # 输入: [batch, 3, 288, 288]
+        B, C, H, W = image.shape
+        # 切分为 9 个碎片 [B, 3, 3, 3, 96, 96]
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)  # [B, C, 3, 3, 96, 96]
+        patches = patches.permute(0,2,3,1,4,5).contiguous()  # [B, 3, 3, C, 96, 96]
+        patches = patches.view(B*9, C, 96, 96)  # [B*9, 3, 96, 96]
+        # 送入 EfficientNet
+        patch_features = self.ef(patches)  # [B*9, hidden_size1]
+        patch_features = patch_features.view(B, 9, -1)  # [B, 9, hidden_size1]
+        # 中心碎片
+        central_tensor = patch_features[:, 4, :]  # [B, hidden_size1]
+        # 其他碎片
+        other_tensor = torch.cat([patch_features[:, :4, :], patch_features[:, 5:, :]], dim=1)  # [B, 8, hidden_size1]
+        # 中心碎片扩展为 [B, 8, hidden_size1]
+        central_expanded = central_tensor.unsqueeze(1).expand(-1, 8, -1)
+        # 拼接中心与其他碎片 [B, 8, 2*hidden_size1]
+        concat_tensor = torch.cat([central_expanded, other_tensor], dim=-1)
+        # contract_fc 并行处理
+        contracted = self.contract_fc(concat_tensor)  # [B, 8, hidden_size1]
+        # 展平成 [B, 8*hidden_size1]
+        feature_tensor = contracted.reshape(B, -1)
+        feature_tensor = self.fc1(feature_tensor)
+        feature_tensor = self.bn(feature_tensor)
+        feature_tensor = self.relu(feature_tensor)
+        out = self.out_layer(feature_tensor)
+        return out
+
+class Buffer_switcher_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2,hidden_size3,action_num,dropout=0.1):
+        super(Buffer_switcher_model,self).__init__()
+        self.fen_model=central_fen_model(hidden_size1,hidden_size2,dropout=dropout)
+        self.contract_layer=nn.Sequential(
+            nn.Linear(hidden_size2,hidden_size3),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size3,hidden_size3),
+            nn.ReLU()
+        )
+        self.out_layer=nn.Linear(hidden_size3,action_num)
+    def forward(self,image1):
+        image1_tensor=self.fen_model(image1)
+        out=self.contract_layer(image1_tensor)
+        out=self.out_layer(out)
+
+        return out
+
 
 
 class fen_model(nn.Module):
@@ -139,17 +208,18 @@ device="cuda" if torch.cuda.is_available() else "cpu"
 class outsider_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(outsider_model,self).__init__()
-        # self.pre_model=fen_model(hidden_size1,hidden_size2)
-        self.pre_model=VisionTransformer(
-        picture_size=[5,3,96,96],
-        patch_size=12,
-        encoder_hidden=hidden_size1,
-        out_size=hidden_size2,
-        n_head=12,
-        encoder_layer_num=12,
-        unet_hidden=hidden_size1,
-        output_channel=3
-        )
+        self.pre_model=fen_model(hidden_size1,hidden_size2)
+        # self.pre_model=VisionTransformer(
+        # picture_size=[5,3,96,96],
+        # patch_size=12,
+        # encoder_hidden=hidden_size1,
+        # out_size=hidden_size2,
+        # n_head=12,
+        # encoder_layer_num=12,
+        # unet_hidden=hidden_size1,
+        # output_channel=3
+        # )
+        
         self.fc1=nn.Linear(hidden_size2,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
@@ -175,11 +245,17 @@ class outsider_model(nn.Module):
 
 
 
-model=outsider_model(1024,1024).to(device)
+# model=outsider_model(1024,1024).to(device)
+model=Buffer_switcher_model(
+        hidden_size1=2048,
+        hidden_size2=1024,
+        hidden_size3=1024,
+        action_num=1
+    ).to(device)
 
 
 
-loss_fn=nn.CrossEntropyLoss().to(device)
+loss_fn=nn.MSELoss()
 optimizer=torch.optim.Adam(model.parameters(),lr=1e-3)
 
 def train(epoch_num=5000,load=True):
@@ -190,8 +266,8 @@ def train(epoch_num=5000,load=True):
     for epoch in range(epoch_num):
         loss_sum=0
         right=0
-        for batch_num,(image,label) in enumerate(train_dataloader):
-           image,label=image.to(device),label.to(device)
+        for image,label in tqdm(train_dataloader):
+           image,label=image.to(device),label.unsqueeze(-1).to(torch.float).to(device)
            outsider_probs=model(image)
            loss=loss_fn(outsider_probs,label)
         #    y_pred=torch.argmax(outsider_probs).item()
@@ -201,7 +277,8 @@ def train(epoch_num=5000,load=True):
            optimizer.step()
         
         print(f"epoch: {epoch}, loss_sum: {loss_sum}")
-    torch.save(model.state_dict(),MODEL_NAME)
+        torch.save(model.state_dict(),MODEL_NAME)
+        torch.save(model.fen_model.state_dict(),"model/central_fen.pth")
 
 
 class test_imageData(Dataset):
@@ -261,17 +338,17 @@ def test():
     model.eval()
     right=0
     with torch.no_grad():
-        for batch_num,(image,label) in enumerate(test_dataloader):
+        for image,label in tqdm(test_dataloader):
             image=image.to(device)
-            y_pred=torch.argmax(model(image)).item()
-            right+=y_pred == label
-        print(f"Accuracy: {right/len(test_dataloader)}")
+            y_pred=model(image)
+            loss_sum+=loss_fn(y_pred,label).item()
+        print(f"Loss_sum: {loss_sum}")
 
 
 
 
 if __name__=="__main__":
-    # HORI_MODEL_NAME="hori_ef0.pth"
-    # VERT_MODEL_NAME="vert_ef0.pth"
-    train(50,load=True)
-    test()
+    # HORI_MODEL_NAME="model/hori_ef0.pth"
+    # VERT_MODEL_NAME="model/vert_ef0.pth"
+    train(50,load=False)
+    # test()
