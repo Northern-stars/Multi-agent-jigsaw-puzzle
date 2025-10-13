@@ -4,17 +4,17 @@ import numpy as np
 import random
 import copy
 import itertools
-from outsider_pretrain import fen_model
-from torchvision.models import efficientnet_b0
-from torch.utils.data import Dataset,DataLoader
+# from outsider_pretrain import fen_model
+from torchvision.models import efficientnet_b0,efficientnet_b3
+# from torch.utils.data import Dataset,DataLoader
 import cv2
 import Vit
 import os
 import time
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=20
-GAMMA=0.9
+DONE_REWARD=100
+GAMMA=0.998
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=25
 ACTOR_LR=1e-4
@@ -32,7 +32,8 @@ SHOW_IMAGE=True
 
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
-CONSISTENCY_REWARD=.2
+CONSISTENCY_REWARD=20
+CONSISTENCY_REWARD_WEIGHT=0.5
 PANELTY=-0.2
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
@@ -42,9 +43,9 @@ EPOCH_NUM=2000
 LOAD_MODEL=False
 SWAP_NUM=[1,2,4,4]
 MAX_STEP=[400,300,300,200]
-MODEL_NAME="(8).pth"
-ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
-CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
+MODEL_NAME="(1).pth"
+ACTOR_PATH=os.path.join("model/Actor"+MODEL_NAME)
+CRITIC_PATH=os.path.join("model/Critic"+MODEL_NAME)
 
 BATCH_SIZE=15
 EPSILON=0.3
@@ -66,44 +67,59 @@ train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
 
 class fen_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2):
-        super(fen_model,self).__init__()
-        self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,256)
-        self.contrast_fc_hori=nn.Linear(512,256)
-        self.contrast_fc_vert=nn.Linear(512,256)
-        self.fc1=nn.Linear(256*12,hidden_size1)
-        self.relu=nn.ReLU()
-        self.bn=nn.BatchNorm1d(hidden_size1)
-        self.do=nn.Dropout1d(p=0.1)
-        self.fc2=nn.Linear(hidden_size1,hidden_size2)
-        self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
-        self.vert_set=[(i,i+3) for i in range(3*2)]
-    
-    def forward(self,image):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
-        
-        image_tensor=[self.ef(image_fragments[i]) for i in range(len(image_fragments))]
+    def __init__(self, hidden_size1, hidden_size2):
+        super(fen_model, self).__init__()
+        self.ef = efficientnet_b3(weights="DEFAULT")
+        self.ef.classifier = nn.Linear(1536, 1024)
 
-        hori_tensor=torch.cat([self.contrast_fc_hori(torch.cat([image_tensor[self.hori_set[i][0]],image_tensor[self.hori_set[i][1]]],dim=-1)) for i in range(len(self.hori_set))],dim=-1)
-        vert_tensor=torch.cat([self.contrast_fc_vert(torch.cat([image_tensor[self.vert_set[i][0]],image_tensor[self.vert_set[i][1]]],dim=-1)) for i in range(len(self.vert_set))],dim=-1)
-        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
-        x=self.do(feature_tensor)
-        x=self.fc1(x)
-        x=self.do(x)
-        # x=self.bn(x)
-        x=self.relu(x)
-        x=self.fc2(x)
+        self.contrast_fc_hori = nn.Linear(2048, 1024)
+        self.contrast_fc_vert = nn.Linear(2048, 1024)
+
+        self.fc1 = nn.Linear(1024*12, hidden_size1)
+        self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm1d(hidden_size1)
+        self.do = nn.Dropout1d(p=0.1)
+        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
+
+        # 定义 index 对
+        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
+        self.vert_set = [(i, i+3) for i in range(6)]
+
+    def forward(self, image):
+        B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
+
+        # ---- 1. 切片并 reshape 成 batch ----
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
+        # patches: (B, C, 3, 3, 96, 96)
+        patches = patches.permute(0,2,3,1,4,5).contiguous()
+        patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
+
+        # ---- 2. 一次性送进 ef ----
+        feats = self.ef(patches)   # (B*9, 1024)
+        feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
+
+        # ---- 3. 构建横向对 ----
+        hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
+        hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
+
+        # ---- 4. 构建纵向对 ----
+        vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
+        vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
+
+        # ---- 5. 拼接所有特征 ----
+        feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
+        feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
+
+        # ---- 6. 全连接部分 ----
+        x = self.do(feature_tensor)
+        x = self.fc1(x)
+        x = self.do(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+
         return x
 
 
@@ -324,6 +340,28 @@ class critic_model(nn.Module):
 #         out=self.fc2(x)
 #         return out
 
+def check_gradients(model, verbose=True, min_abs_grad=1e-10):
+    summary = {}
+    total_params = 0
+    no_grad_params = 0
+
+    for name, param in model.named_parameters():
+        total_params += 1
+        if param.grad is None:
+            summary[name] = "No grad (None)"
+            no_grad_params += 1
+        elif torch.all(torch.abs(param.grad) < min_abs_grad):
+            summary[name] = "Near-zero grad"
+            no_grad_params += 1
+        else:
+            summary[name] = "OK"
+
+    if verbose:
+        print(f"\n[Gradient Check] {no_grad_params}/{total_params} params have no/near-zero gradients.")
+        for name, status in summary.items():
+            print(f"{name:50s} : {status}")
+
+    return summary
 
 
 
@@ -345,7 +383,8 @@ class env:
                  epsilon_gamma,
                  piece_num=9,
                  epochs=10,
-                 tau=0.01
+                 tau=0.01,
+                 lmb=0.95
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -359,9 +398,9 @@ class env:
         self.actor_model=actor_model
         self.critic_model=critic_model
         self.main_critic_model=copy.deepcopy(self.critic_model)
-        self.actor_optimizer=torch.optim.Adam(self.actor_model.parameters(),lr=ACTOR_LR)
+        self.actor_optimizer=torch.optim.AdamW(self.actor_model.parameters(),lr=ACTOR_LR)
         self.actor_schedular=torch.optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=ACTOR_SCHEDULAR_STEP, gamma=0.1)
-        self.critic_optimizer=torch.optim.Adam(self.main_critic_model.parameters(),lr=CRITIC_LR)
+        self.critic_optimizer=torch.optim.AdamW(self.main_critic_model.parameters(),lr=CRITIC_LR)
         self.critic_schedular=torch.optim.lr_scheduler.StepLR(optimizer=self.critic_optimizer,gamma=0.1,step_size=CRITIC_SCHEDULAR_STEP)
         self.device=device
         self.batch_size=batch_size
@@ -375,6 +414,7 @@ class env:
         self.epsilon_gamma=epsilon_gamma
         self.epochs=epochs
         self.tau=tau
+        self.lmb=lmb
 
     
     def load_image(self,image_num,id=[]):
@@ -432,7 +472,8 @@ class env:
         for i in range(len(permutation_list)):
             permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
         done_list=[0 for i in range(len(permutation_copy))]
-        reward_list=[0 for i in range(len(permutation_copy))]
+        local_reward_list=[0 for i in range(len(permutation_copy))]
+        consistency_reward_list=[0 for i in range(len(permutation_copy))]
         edge_length=int(len(permutation_copy[0])**0.5)
         piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
@@ -443,49 +484,36 @@ class env:
 
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
-                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
-                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
             # print(piece_range)
         
-            # for j in range(piece_num):
-            #     if permutation_copy[i][j]!=-1:
-            #         label=permutation_copy[i][j]%piece_num
-            #         manhatton_distance=abs(j%edge_length-label%edge_length)+abs(j//edge_length-label//edge_length)
-            #         piece_range[permutation_copy[i][j]//piece_num]+=1
-            #         reward_list[i]+=(1/(manhatton_distance+1)) * (permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
-            
-            
             for j in range(piece_num):
                 if permutation_copy[i][j]!=-1:
                     piece_range[permutation_copy[i][j]//piece_num]+=1
-                    reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
+                    local_reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
-
+            
             max_piece=piece_range[i]#Consistancy reward
 
-            weight=0.2
-            if -1 in permutation_copy[i]:
-                weight+=0.5*CONSISTENCY_REWARD
-            if max_piece==piece_num-3:
-                weight+=1*CONSISTENCY_REWARD
-            elif max_piece==piece_num-2:
-                weight+=2*CONSISTENCY_REWARD
-            elif max_piece==piece_num-1:
-                weight+=3*CONSISTENCY_REWARD
-            elif max_piece==piece_num:
-                weight+=5*CONSISTENCY_REWARD
+            
+            # if -1 in permutation_copy[i]:
+            #     consistency_reward_list[j]+=0.5*CONSISTENCY_REWARD
+            consistency_reward_list[i]=max_piece*CONSISTENCY_REWARD_WEIGHT
+            if max_piece==piece_num:
+                consistency_reward_list[i]=CONSISTENCY_REWARD
 
-            reward_list[i]*=weight
-
+            local_reward_list[i]+=PANELTY
+            consistency_reward_list[i]+=PANELTY
             start_index=min(permutation_copy[i])//piece_num*piece_num#Done reward
             if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
-                reward_list[i]=DONE_REWARD
-        return reward_list,done_list
+                local_reward_list[i]=DONE_REWARD
+        return [local_reward_list[i]+consistency_reward_list[i] for i in range (self.image_num)],done_list
     
 
     def clean_memory(self):
@@ -552,26 +580,42 @@ class env:
         
     def update(self,show=False):
         eps=0.2
-        R=[0 for _ in range(self.image_num)]
+        gae=[0 for _ in range(self.image_num)]
         R_start=[True for _ in range(self.image_num)]
         # R_track=[[] for _ in range(self.image_num)]
         self.critic_model.eval()
-        i=(self.memory_counter-1)%self.mkv_memory_size
-        while i!=(self.trace_start_point-1)%self.mkv_memory_size:
+        i=(self.memory_counter-1)%len(self.mkv_memory)
+        while i!=(self.trace_start_point-1)%len(self.mkv_memory) or all(R_start):
             image_index=self.mkv_memory[i]["Image_index"]
             done=self.mkv_memory[i]["Done"]
             reward=self.mkv_memory[i]["Reward"]
             if R_start[image_index]:
                 R_start[image_index]=False
-                current_image,current_outsider=self.get_image(self.mkv_memory[i]["State"],image_index=image_index)
-                value=self.critic_model(current_image,current_outsider)
-                R[image_index]=value.item()
-            else:
-                R[image_index]=self.gamma*R[image_index]*(1-done)+reward+PANELTY
+
+            current_image,current_outsider=self.get_image(self.mkv_memory[i]["State"],image_index=image_index)
+            next_image,next_outsider=self.get_image(self.mkv_memory[i]["Next_state"],image_index=image_index)
+            with torch.no_grad():
+                cur_value=self.critic_model(current_image,current_outsider).item()
+                next_value=self.critic_model(next_image,next_outsider).item()
+            
+            delta=reward+self.gamma*next_value*(1-done)-cur_value
+            gae[image_index]=delta+self.gamma*self.lmb*(1-done)*gae[image_index]
+
+            self.mkv_memory[i]["Advantage"]=gae[image_index]
+        
+        
+            
+            
             # R_track[image_index].append(R[image_index])
-            self.mkv_memory[i]["Return"]=R[image_index]
-            i=(i-1)%self.mkv_memory_size
-        i=(self.memory_counter-1)%self.mkv_memory_size
+
+            i=(i-1)%len(self.mkv_memory)
+        # i=(self.memory_counter-1)%len(self.mkv_memory)
+        for i in range(len(self.mkv_memory)):
+            if not "Advantage" in self.mkv_memory[i]:
+                print("Empty advantage: ",i)
+                self.clean_memory()
+                return
+
         # R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
 
 
@@ -596,7 +640,7 @@ class env:
             
             states=[]
             outsider_pieces=[]
-            ret=[]
+            advantage=[]
             actions=[]
             next_states=[]
             next_outsiders=[]
@@ -620,7 +664,8 @@ class env:
                 
                 reward.append(sample_dicts[a]["Reward"])
                 done.append(sample_dicts[a]["Done"])
-                ret.append(sample_dicts[a]["Return"])
+                advantage.append(sample_dicts[a]["Advantage"])
+
 
                     
             
@@ -645,16 +690,10 @@ class env:
             log_probs=torch.log(selected_probs)
             old_log_probs=torch.cat(old_log_probs,dim=0)
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
+            advantage=torch.tensor(advantage,dtype=torch.float32).to(self.device).unsqueeze(-1)
             done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
             entropy = torch.distributions.Categorical(probs).entropy()
-            ret=torch.tensor(ret,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            
 
-            pred_ret=self.critic_model(state_tensor,outsider_tensor)
-            
-            advantage=ret-pred_ret.detach()
-            if advantage.size(0)>1:
-                advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
             ratio=torch.exp(log_probs-old_log_probs)
             actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
 
@@ -663,6 +702,9 @@ class env:
             self.actor_optimizer.zero_grad()
             
             actor_loss.backward()
+
+            # check_gradients(model=self.actor_model, verbose=show)
+
 
             
 
@@ -677,6 +719,7 @@ class env:
                 critic_loss_sum+=critic_loss.item()
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
+                # check_gradients(self.critic_model,verbose=show)
                 self.critic_optimizer.step()
 
             for target_param, main_param in zip(self.critic_model.parameters(),self.main_critic_model.parameters()):
@@ -734,7 +777,7 @@ class env:
             last_action=[-1 for _ in range(self.image_num)]
 
 
-            step = 0; done = False ; train_flag=True
+            step = 0; done = False ; train_flag=False
             while not done and step < max_step:
                 state_list=[]
                 do_list = []
@@ -772,7 +815,7 @@ class env:
                                                   log_prob=prev_log_prob,
                                                   reward= prev_reward,
                                                   next_state= perm_with_buf,
-                                                  done=done_list[j])
+                                                  done=1 if done_list[j] else 0)
                         
                         do_list.append(j)
 
@@ -815,20 +858,22 @@ class env:
                     pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j]-last_reward_list[j])
                 
                 done = all(done_list)
-                step += 1
+                
 
-                if step%TRAIN_PER_STEP==0 and len(self.mkv_memory)>0:
+                if step!=0 and step%TRAIN_PER_STEP==0 and len(self.mkv_memory)>0:
                     train_flag=False
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
-                    self.clean_memory()
+                    # self.clean_memory()
+                    self.trace_start_point=self.memory_counter
                 elif train_flag and len(self.mkv_memory)>0:
                     train_flag=False
                     self.epsilon/=(EPSILON_GAMMA**5)
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
-                    self.clean_memory
-
+                    # self.clean_memory()
+                    self.trace_start_point=self.memory_counter
+                step += 1
 
             
             for j in range(self.image_num):
@@ -841,7 +886,7 @@ class env:
                                                   log_prob=prev_log_prob,
                                                   reward= prev_reward,
                                                   next_state= perm_with_buf,
-                                                  done=done_list[j])
+                                                  done=1 if done_list[j] else 0)
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
             print(f"Action_list: {self.action_list}")
@@ -910,6 +955,10 @@ if __name__ == "__main__":
                     epsilon_gamma=EPSILON_GAMMA,
                    entropy_weight=ENTROPY_WEIGHT)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
+    # environment.load_image(1,[100])
+    # environment.recording_memory(100,0,[1,0,2,3,5,6,7,8],1,200,[0,1,2,3,5,6,7,8],0.5,1)
+    # environment.update(show=True)
+
     # environment.load_image(1,id=[1000])
     # environment.show_image([[0,1,2,3,4,5,6,7,8]])
     # reward_list,done_list=environment.get_reward([[0,1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15,16,17]])
