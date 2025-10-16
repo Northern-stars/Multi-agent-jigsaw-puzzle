@@ -41,9 +41,9 @@ ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[1,2,4,4]
+SWAP_NUM=[1,3,5,5]
 MAX_STEP=[400,300,300,200]
-MODEL_NAME="(1).pth"
+MODEL_NAME="(2).pth"
 ACTOR_PATH=os.path.join("model/Actor"+MODEL_NAME)
 CRITIC_PATH=os.path.join("model/Critic"+MODEL_NAME)
 
@@ -51,7 +51,7 @@ BATCH_SIZE=15
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
-AGENT_EPOCHS=1
+AGENT_EPOCHS=5
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -86,33 +86,27 @@ class fen_model(nn.Module):
         self.vert_set = [(i, i+3) for i in range(6)]
 
     def forward(self, image):
-        B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
+        B, C, H, W = image.shape   
 
-        # ---- 1. 切片并 reshape 成 batch ----
         patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
-        # patches: (B, C, 3, 3, 96, 96)
+
         patches = patches.permute(0,2,3,1,4,5).contiguous()
         patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
 
-        # ---- 2. 一次性送进 ef ----
         feats = self.ef(patches)   # (B*9, 1024)
         feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
 
-        # ---- 3. 构建横向对 ----
         hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
                                   for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
         hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
 
-        # ---- 4. 构建纵向对 ----
         vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
                                   for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
         vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
 
-        # ---- 5. 拼接所有特征 ----
         feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
         feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
 
-        # ---- 6. 全连接部分 ----
         x = self.do(feature_tensor)
         x = self.fc1(x)
         x = self.do(x)
@@ -143,35 +137,51 @@ class actor_model(nn.Module):
         self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
         self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+        self.consistency_fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
         self.bn=nn.BatchNorm1d(hidden_size2)
         self.fc2=nn.Linear(hidden_size2,action_num)
     
-    def forward(self,image,outsider_piece):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
-        image_input=self.image_fen_model(image)
-        outsider_input=self.outsider_fen_model(outsider_piece)
-        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
-        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
-        outsider_tensor=self.outsider_fc(outsider_tensor)
-        feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
-        out=self.fc1(feature_tensor)
+    def forward(self, image, outsider_piece):
+
+        batch_size = image.size(0)
+        
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)  # [B, C, 3, 3, 96, 96]
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()  # [B, 3, 3, C, 96, 96]
+        patches = patches.view(batch_size * 9, -1, 96, 96)  # [B*9, C, 96, 96]
+        
+        image_input = self.image_fen_model(image)  # [B, feature_dim]
+        
+        outsider_input = self.outsider_fen_model(outsider_piece)  # [B, feature_dim]
+
+        outsider_image_features = self.outsider_fen_model(patches)  # [B*9, feature_dim]
+        outsider_image_features = outsider_image_features.view(batch_size, 9, -1)  # [B, 9, feature_dim]
+        
+        outsider_expanded = outsider_input.unsqueeze(1).expand(batch_size, 9, -1)  # [B, 9, feature_dim]
+        
+        contrast_input = torch.cat([outsider_expanded, outsider_image_features], dim=-1)  # [B, 9, 2*feature_dim]
+        contrast_input = contrast_input.view(batch_size * 9, -1)  # [B*9, 2*feature_dim]
+        
+        contrast_features = self.outsider_contrast_fc(contrast_input)  # [B*9, output_dim]
+        contrast_features = contrast_features.view(batch_size, 9, -1)  # [B, 9, output_dim]
+        
+        outsider_tensor = contrast_features.view(batch_size, -1)  # [B, 9*output_dim]
+        outsider_tensor = self.outsider_fc(outsider_tensor)  # [B, feature_dim]
+        
+        
+        feature_tensor = torch.cat([image_input, outsider_tensor], dim=-1)  # [B, 2*feature_dim]
+        
+        pairwise_out=self.fc1(feature_tensor)
+        consistency_out=self.consistency_fc1(feature_tensor)
+        out=pairwise_out+consistency_out
+
         out=self.dropout(out)
         out=self.bn(out)
         out=self.relu(out)
         out=self.fc2(out)
-        out=nn.functional.softmax(out,dim=1)
+        out = nn.functional.softmax(out, dim=1)
+        
         return out
 
 class critic_model(nn.Module):
@@ -192,30 +202,41 @@ class critic_model(nn.Module):
         # print("Critic missing keys hori",load_result_hori.missing_keys)
         # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
         self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+        self.consistency_fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(p=0.1)
         self.bn=nn.BatchNorm1d(hidden_size2)
         self.fc=nn.Linear(hidden_size2,1)
     
     def forward(self,image,outsider):
-        image_fragments=[
-            image[:,:,0:96,0:96],
-            image[:,:,0:96,96:192],
-            image[:,:,0:96,192:288],
-            image[:,:,96:192,0:96],
-            image[:,:,96:192,96:192],
-            image[:,:,96:192,192:288],
-            image[:,:,192:288,0:96],
-            image[:,:,192:288,96:192],
-            image[:,:,192:288,192:288]
-        ]
+        batch_size=image.size(0)
+
+        patches=image.unfold(2,96,96).unfold(3,96,96)
+        patches=patches.permute(0,2,3,1,4,5).contiguous()
+        patches=patches.view(batch_size*9,-1,96,96)
+
         image_input=self.fen_model(image)
         outsider_input=self.outsider_fen_model(outsider)
-        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
-        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
-        outsider_tensor=self.outsider_fc(outsider_tensor)
+
+        outsider_image_features=self.outsider_fen_model(patches)
+        outsider_image_features=outsider_image_features.view(batch_size,9,-1)
+        
+        outsider_expanded=outsider_input.unsqueeze(1).expand(batch_size,9,-1)
+
+        contrast_input=torch.cat([outsider_expanded,outsider_image_features],dim=-1)
+        contrast_input=contrast_input.view(batch_size*9,-1)
+
+        contrast_features=self.outsider_contrast_fc(contrast_input)
+        contrast_features=contrast_features.view(batch_size,-1)
+
+        outsider_tensor=self.outsider_fc(contrast_features)
+
         feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
-        out=self.fc1(feature_tensor)
+
+        pairwise_out=self.fc1(feature_tensor)
+        consistency_out=self.consistency_fc1(feature_tensor)
+        out=pairwise_out+consistency_out
+
         out=self.dropout(out)
         out=self.bn(out)
         out=self.relu(out)
