@@ -572,7 +572,6 @@ class env:
             self.actor_schedular.step()
 
 
-
     def step(self, epoch=500, load=True):
 
         
@@ -688,7 +687,7 @@ class env:
                     reward_sum_list[j].append(reward_list[j])
 
                     prev_state,prev_action,prev_log_prob,_=pending_transitions[j]
-                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j]-last_reward_list[j])
+                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j])
                 
                 done = all(done_list)
                 

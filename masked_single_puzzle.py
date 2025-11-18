@@ -12,6 +12,7 @@ import Vit
 import os
 import time
 from matplotlib import pyplot as plt
+import json
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=1000
@@ -28,7 +29,7 @@ ACTOR_SCHEDULAR_STEP=500
 CRITIC_SCHEDULAR_STEP=500
 ENCODER_SCHEDULAR_STEP=100
 BASIC_BIAS=1e-8
-SHOW_IMAGE=True
+SHOW_IMAGE=False
 
 
 PAIR_WISE_REWARD=.2
@@ -41,7 +42,7 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=1000
-LOAD_MODEL=True
+LOAD_MODEL=False
 SWAP_NUM=[1,3,5,5]
 MAX_STEP=[400,300,300,200]
 MODEL_NAME="(3).pth"
@@ -97,6 +98,16 @@ class Fen_model(nn.Module):
         feats = self.ef(patches)  
         feats = feats.view(B, 9, 1024) 
 
+        if mask is not None:
+            mask_matrix=torch.ones(B,9).to(DEVICE)
+            for i in range(B):
+                for j in range(len(mask[i])):
+                    batch_id,piece_id=i,mask[i][j]
+                    mask_matrix[batch_id][piece_id]=0
+            
+            mask_matrix=mask_matrix.unsqueeze(-1)
+            feats=feats*mask_matrix
+
         hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
                                   for (i,j) in self.hori_set], dim=1)
         hori_feats = self.contrast_fc_hori(hori_pairs) 
@@ -105,25 +116,25 @@ class Fen_model(nn.Module):
                                   for (i,j) in self.vert_set], dim=1)  
         vert_feats = self.contrast_fc_vert(vert_pairs) 
 
-        if mask is not None:
-            hori_mask=torch.ones(B,len(self.hori_set)).to(DEVICE)
-            vert_mask=torch.ones(B,len(self.vert_set)).to(DEVICE)
-            for i in range(len(mask)):
-                for j in range(len(mask[i])):
-                    batch_id,piece_id=i,mask[i][j]
-                    for k in range(len(self.hori_set)):
-                        if piece_id in self.hori_set[k]:
-                            hori_mask[batch_id][k]=0
-                        if piece_id in self.vert_set[k]:
-                            vert_mask[batch_id][k]=0
+        # if mask is not None:
+        #     hori_mask=torch.ones(B,len(self.hori_set)).to(DEVICE)
+        #     vert_mask=torch.ones(B,len(self.vert_set)).to(DEVICE)
+        #     for i in range(len(mask)):
+        #         for j in range(len(mask[i])):
+        #             batch_id,piece_id=i,mask[i][j]
+        #             for k in range(len(self.hori_set)):
+        #                 if piece_id in self.hori_set[k]:
+        #                     hori_mask[batch_id][k]=0
+        #                 if piece_id in self.vert_set[k]:
+        #                     vert_mask[batch_id][k]=0
 
             
 
-            hori_mask=hori_mask.unsqueeze(-1)
-            vert_mask=vert_mask.unsqueeze(-1)
+        #     hori_mask=hori_mask.unsqueeze(-1)
+        #     vert_mask=vert_mask.unsqueeze(-1)
 
-            hori_feats=hori_feats*hori_mask
-            vert_feats=vert_feats*vert_mask
+        #     hori_feats=hori_feats*hori_mask
+        #     vert_feats=vert_feats*vert_mask
 
 
         feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)
@@ -306,7 +317,7 @@ class env:
             permutation_raw.insert(4,4)
             for j in range(9):
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
-            self.permutation2piece[-1]=torch.zeros(3,96,96)
+            self.permutation2piece[-1]=torch.randn(3,96,96)
         
     def get_image(self,permutation,image_index):
         image=torch.zeros(3,288,288)
@@ -458,6 +469,7 @@ class env:
                     mask=mask_list[i:i+BATCH_SIZE]
 
                 value=self.model(image,mask)
+                # value=self.model(image)
                 value_list.append(value.squeeze(-1).to("cpu"))
                 i+=BATCH_SIZE
             
@@ -540,8 +552,10 @@ class env:
             next_state_tensor=torch.cat(next_states,dim=0)
 
             q_next=self.model(next_state_tensor,next_mask).detach()
+            # q_next=self.model(next_state_tensor).detach()
             
             q_eval=self.main_model(next_state_tensor,next_mask)
+            # q_eval=self.main_model(next_state_tensor)
 
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
 
@@ -567,6 +581,7 @@ class env:
             self.model.load_state_dict(torch.load(ACTOR_PATH))
             self.main_model=copy.deepcopy(self.model)
         reward_record=[]
+        done_record=[]
         for i in range(epoch):
             # self.clean_memory()
             if i > 300:
@@ -699,6 +714,9 @@ class env:
             print(f"Action_list: {self.action_list}")
             print(f"Permutation list: {permutation_list}")
             reward_record.append([sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ])
+            done_record.append(done)
+            self.save_log("reward",reward_record)
+            self.save_log("done",done_record)
             for j in range(self.image_num):
                 if termination_list[j]>=20:
                     self.epsilon/=(EPSILON_GAMMA)
@@ -712,15 +730,32 @@ class env:
         self.plot_reward_curve(reward_record)
             
                 
-    def plot_reward_curve(self,reward_record):
+    def plot_reward_curve(self,reward_record,done_record):
         avg_reward=[]
+        acc=[]
         for i in range(len(reward_record)):
             avg_reward.append(sum(reward_record[i])/len(reward_record[i]))
+            acc.append(done_record[i] if i==0 else (acc[i-1]*i+done_record[i])/(i+1))
         plt.plot(range(len(avg_reward)),avg_reward)
         plt.xlabel("Episode")
         plt.ylabel("Average Reward")
         plt.title("Reward Curve")
-        plt.show()
+        plt.savefig(os.path.join("result","reward.png"))
+        plt.plot(range(len(acc)),acc)
+        plt.xlabel("Episode")
+        plt.ylabel("Average accuracy")
+        plt.savefig(os.path.join("result","acc.png"))
+    
+    def save_log(self,file_name,log):
+        with open(file_name+".json","w") as file:
+            json.dump(log,file)
+
+    def read_log(self,file_name):
+        with open(file_name+".json","r") as file:
+            loaded_data=json.load(file)
+        
+        return loaded_data
+
             
 
 
@@ -773,9 +808,6 @@ if __name__ == "__main__":
                     epsilon_gamma=EPSILON_GAMMA,
                    entropy_weight=ENTROPY_WEIGHT)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
-    # environment.load_image(1,[100])
-    # environment.recording_memory(100,0,[1,0,2,3,5,6,7,8],1,200,[0,1,2,3,5,6,7,8],0.5,1)
-    # environment.update(show=True)
 
     # environment.load_image(1,id=[1000])
     # environment.show_image([[0,1,2,3,4,5,6,7,8]])

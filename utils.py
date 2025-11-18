@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import json
 import os
 
-def plot_reward_curve(reward_record,done_record):
+def plot_reward_curve(reward_record,done_record,file_name):
         avg_reward=[]
         acc=[]
         for i in range(len(reward_record)):
@@ -12,18 +12,18 @@ def plot_reward_curve(reward_record,done_record):
         plt.xlabel("Episode")
         plt.ylabel("Average Reward")
         plt.title("Reward Curve")
-        plt.savefig(os.path.join("result","reward.png"))
+        plt.savefig(os.path.join("result","reward"+file_name+".png"))
         plt.plot(range(len(acc)),acc)
         plt.xlabel("Episode")
         plt.ylabel("Average accuracy")
-        plt.savefig(os.path.join("result","acc.png"))
+        plt.savefig(os.path.join("result","acc"+file_name+".png"))
     
 def save_log(file_name,log):
-    with open(file_name+".json","w") as file:
+    with open(os.path.join("json",file_name+".json"),"w") as file:
         json.dump(log,file)
 
 def read_log(file_name):
-    with open(file_name+".json","r") as file:
+    with open(os.path.join("json",file_name+".json"),"r") as file:
         loaded_data=json.load(file)
     
     return loaded_data
