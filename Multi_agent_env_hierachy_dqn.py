@@ -43,15 +43,15 @@ ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[4,4,4,8]
+SWAP_NUM=[2,3,4,8]
 MAX_STEP=[200,200,200,200]
 MODEL_NAME="(1).pth"
 MODEL_PATH=os.path.join("model/DQN"+MODEL_NAME)
 
 
 BATCH_SIZE=20
-EPSILON=0.3
-EPSILON_GAMMA=0.998
+EPSILON=0.5
+EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
 AGENT_EPOCHS=5
 
@@ -305,6 +305,7 @@ class env:
         self.epochs=epochs
         self.tau=tau
         self.gamma=gamma
+        
 
     
     def load_image(self,image_num,id=[]):
@@ -327,18 +328,23 @@ class env:
                 image_raw[:,192:288,96:192],
                 image_raw[:,192:288,192:288]
             ]
-            permutation_raw=list(permutation_raw)
-            for m in range(8):
-                for n in range(8):
-                    # print(type(imageLabel[i]))
-                    # print(imageLabel)
-                    if permutation_raw[m][n]==True:
-                        if n>=4:
-                            permutation_raw[m]=n+1
-                            break
-                        else:
-                            permutation_raw[m]=n
-                            break
+            # permutation_raw=list(permutation_raw)
+            # for m in range(8):
+            #     for n in range(8):
+            #         # print(type(imageLabel[i]))
+            #         # print(imageLabel)
+            #         if permutation_raw[m][n]==True:
+            #             if n>=4:
+            #                 permutation_raw[m]=n+1
+            #                 break
+            #             else:
+            #                 permutation_raw[m]=n
+            #                 break
+
+            permutation_raw=list(np.argmax(permutation_raw,axis=1))
+            for j in range(len(permutation_raw)):
+                if permutation_raw[j]>=4:
+                    permutation_raw[j]+=1
             permutation_raw.insert(4,4)
             for j in range(9):
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
@@ -691,7 +697,7 @@ class Local_switcher:
         image_list=[]
         outsider_list=[]
 
-        for i in range(self.action_num):
+        for i in range(self.action_num+1):
             perm_=self.permute(permutation,i)
             image,_=self.env.get_image(perm_,image_index=image_index)
             image_list.append(copy.deepcopy(image.cpu()))
@@ -1205,9 +1211,9 @@ if __name__ == "__main__":
         hidden_2=512,
         action_num=2
     ).to(DEVICE)
-    decider_actor.outsider_fen.load_state_dict(torch.load("model/decider_outsider_fen.pth"))
+    # decider_actor.outsider_fen.load_state_dict(torch.load("model/decider_outsider_fen.pth"))
     
-    decider=Decider(memory_size=1000,
+    decider=Decider(memory_size=2000,
                     model=decider_actor,
                     env=environment,
                     action_num=2,
@@ -1221,9 +1227,9 @@ if __name__ == "__main__":
         outsider_hidden_size=1024,
         action_num=8
     ).to(DEVICE)
-    buffer_switcher_model.load_state_dict(torch.load("model/outsider_switcher_pretrain.pth"))
+    # buffer_switcher_model.load_state_dict(torch.load("model/outsider_switcher_pretrain.pth"))
     buffer_switcher=Buffer_switcher(
-        memory_size=1000,
+        memory_size=2000,
         model=buffer_switcher_model,
         action_num=8,
         batch_size=BATCH_SIZE,
@@ -1236,9 +1242,9 @@ if __name__ == "__main__":
                                               hidden1=2048,
                                               hidden2=1024,
                                               action_num=1).to(DEVICE)
-    local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
+    # local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(
-        memory_size=1000,
+        memory_size=2000,
         gamma=environment.gamma,
         batch_size=BATCH_SIZE,
         action_num=28,
@@ -1246,10 +1252,17 @@ if __name__ == "__main__":
         model=local_switcher_model
     )
     # pretrain_model_dict=pretrain_model(256,256)
-    # pretrain_model_dict.load_state_dict(torch.load("pairwise_pretrain.pth"))
+    # pretrain_model_dict.load_state_dict(torch.load("model/pairwise_pretrain.pth"))
     # selective_load_state_dict(pretrain_model_dict,critic,{"ef":"fen_model.ef"})
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_hori":"fen_model.contrast_fc_hori"})
     # selective_load_state_dict(pretrain_model_dict,critic,{"contrast_fc_vert":"fen_model.contrast_fc_vert"})
+
+    # environment.load_image(image_num=2,id=[0,1])
+    # initial_perm=environment.summon_permutation_list(swap_num=8)
+    # permutation_list = [initial_perm[j*(environment.piece_num-1):(j+1)*(environment.piece_num-1)]
+    #                             for j in range(environment.image_num)]
+    # environment.show_image(image_permutation_list=permutation_list)
+    # environment.show_image(image_permutation_list=[[0,1,2,3,5,6,7,8],[9,10,11,12,14,15,16,17]])
     print(f"Device: {DEVICE}")
     run_maze(env=environment,
         decider=decider,
@@ -1257,4 +1270,6 @@ if __name__ == "__main__":
              ,buffer_switcher=buffer_switcher
              ,epoch_num=EPOCH_NUM
              ,load_flag=LOAD_MODEL)
+
+    
     

@@ -10,6 +10,7 @@ import cv2
 import Vit
 import os
 import time
+from pretrain import pretrain_model
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DONE_REWARD=20
@@ -31,7 +32,8 @@ SHOW_IMAGE=True
 
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
-CONSISTENCY_REWARD=.2
+CONSISTENCY_REWARD=50
+CONSISTENCY_REWARD_WEIGHT=.5
 PANELTY=-0.2
 ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
@@ -42,8 +44,8 @@ LOAD_MODEL=False
 SWAP_NUM=[1,2,4,4]
 MAX_STEP=[400,300,300,200]
 MODEL_NAME="(8).pth"
-ACTOR_PATH=os.path.join("DQN_classic"+MODEL_NAME)
-CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
+ACTOR_PATH=os.path.join("model/DQN_classic"+MODEL_NAME)
+CRITIC_PATH=os.path.join("model/Critic"+MODEL_NAME)
 
 BATCH_SIZE=15
 EPSILON=0.3
@@ -63,6 +65,48 @@ test_y_path = 'dataset/test_label_48gap_33.npy'
 train_x=np.load(train_x_path)
 train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
+
+
+def selective_load_state_dict(source_model, target_model, layer_mapping):
+    """
+    选择性加载state_dict
+    
+    参数:
+    - source_model: 源模型
+    - target_model: 目标模型  
+    - layer_mapping: 字典，{源层名: 目标层名}
+    """
+    source_state_dict = source_model.state_dict()
+    target_state_dict = target_model.state_dict()
+    
+    # 创建新的state_dict，只更新指定的层
+    new_state_dict = target_state_dict.copy()
+    
+    for src_layer, tgt_layer in layer_mapping.items():
+        src_weight_key = f"{src_layer}.weight"
+        src_bias_key = f"{src_layer}.bias"
+        
+        tgt_weight_key = f"{tgt_layer}.weight"
+        tgt_bias_key = f"{tgt_layer}.bias"
+        
+        # 复制权重
+        if src_weight_key in source_state_dict and tgt_weight_key in new_state_dict:
+            if source_state_dict[src_weight_key].shape == new_state_dict[tgt_weight_key].shape:
+                new_state_dict[tgt_weight_key] = source_state_dict[src_weight_key].clone()
+            else:
+                print(f"权重形状不匹配: {src_weight_key} -> {tgt_weight_key}")
+        
+        # 复制偏置
+        if src_bias_key in source_state_dict and tgt_bias_key in new_state_dict:
+            if source_state_dict[src_bias_key].shape == new_state_dict[tgt_bias_key].shape:
+                new_state_dict[tgt_bias_key] = source_state_dict[src_bias_key].clone()
+            else:
+                print(f"偏置形状不匹配: {src_bias_key} -> {tgt_bias_key}")
+    
+    # 加载更新后的state_dict
+    target_model.load_state_dict(new_state_dict, strict=False)
+    return target_model
+
 
 class fen_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
@@ -100,7 +144,7 @@ class fen_model(nn.Module):
         x=self.do(feature_tensor)
         x=self.fc1(x)
         x=self.do(x)
-        # x=self.bn(x)
+        x=self.bn(x)
         x=self.relu(x)
         x=self.fc2(x)
         return x
@@ -427,7 +471,8 @@ class env:
         for i in range(len(permutation_list)):
             permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
         done_list=[0 for i in range(len(permutation_copy))]
-        reward_list=[0 for i in range(len(permutation_copy))]
+        local_reward_list=[0 for i in range(len(permutation_copy))]
+        consistency_reward_list=[0 for i in range(len(permutation_copy))]
         edge_length=int(len(permutation_copy[0])**0.5)
         piece_num=len(permutation_copy[0])
         hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
@@ -438,48 +483,37 @@ class env:
 
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
-                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
-                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
-                    reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==i):
+                    local_reward_list[i]+=1*PAIR_WISE_REWARD
 
             piece_range=[0 for j in range (len(permutation_list))]
             # print(piece_range)
         
-            # for j in range(piece_num):
-            #     if permutation_copy[i][j]!=-1:
-            #         label=permutation_copy[i][j]%piece_num
-            #         manhatton_distance=abs(j%edge_length-label%edge_length)+abs(j//edge_length-label//edge_length)
-            #         piece_range[permutation_copy[i][j]//piece_num]+=1
-            #         reward_list[i]+=(1/(manhatton_distance+1)) * (permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
-            
-            
             for j in range(piece_num):
                 if permutation_copy[i][j]!=-1:
                     piece_range[permutation_copy[i][j]//piece_num]+=1
-                    reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
+                    local_reward_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)*CATE_REWARD#Category reward
             
-
+            
             max_piece=piece_range[i]#Consistancy reward
 
-            weight=0.2
-            if -1 in permutation_copy[i]:
-                weight+=0.5*CONSISTENCY_REWARD
-            if max_piece==piece_num-3:
-                weight+=1*CONSISTENCY_REWARD
-            elif max_piece==piece_num-2:
-                weight+=2*CONSISTENCY_REWARD
-            elif max_piece==piece_num-1:
-                weight+=3*CONSISTENCY_REWARD
-            elif max_piece==piece_num:
-                weight+=5*CONSISTENCY_REWARD
+            
+            # if -1 in permutation_copy[i]:
+            #     consistency_reward_list[j]+=0.5*CONSISTENCY_REWARD
+            consistency_reward_list[j]=max_piece*CONSISTENCY_REWARD_WEIGHT
+            if max_piece==piece_num:
+                consistency_reward_list[j]=CONSISTENCY_REWARD
 
-            reward_list[i]*=weight
-
+            local_reward_list[i]+=PANELTY
+            consistency_reward_list[i]+=PANELTY
             start_index=min(permutation_copy[i])//piece_num*piece_num#Done reward
             if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
-                reward_list[i]=DONE_REWARD
+                local_reward_list[i]=DONE_REWARD
+        
+        reward_list=[local_reward_list[j]+consistency_reward_list[j] for j in range(self.image_num)]
         return reward_list,done_list
     
 
@@ -665,7 +699,7 @@ class env:
 
             
             initial_perm   = self.summon_permutation_list(swap_num=swap_num)
-            permutation_list = [initial_perm[j*self.piece_num:(j+1)*self.piece_num]
+            permutation_list = [initial_perm[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
             buffer               = [-1] * self.buffer_size
             done_list            = [False] * self.image_num
@@ -816,7 +850,11 @@ if __name__ == "__main__":
     
     # critic=critic_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
     actor=actor_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256,action_num=36).to(DEVICE)
-
+    pretrain_model_dict=pretrain_model(256,256)
+    pretrain_model_dict.load_state_dict(torch.load("model/pairwise_pretrain.pth"))
+    selective_load_state_dict(pretrain_model_dict,actor,{"ef":"fen_model.ef"})
+    selective_load_state_dict(pretrain_model_dict,actor,{"contrast_fc_hori":"fen_model.contrast_fc_hori"})
+    selective_load_state_dict(pretrain_model_dict,actor,{"contrast_fc_vert":"fen_model.contrast_fc_vert"})
     # critic=critic_model(picture_size=[1,3,288,288],
     #                     outsider_size=[1,3,96,96],
     #                     patch_size=16,
@@ -842,7 +880,7 @@ if __name__ == "__main__":
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
-                    memory_size=2000,
+                    memory_size=1000,
                     batch_size=BATCH_SIZE,
                     gamma=GAMMA,
                     device=DEVICE,

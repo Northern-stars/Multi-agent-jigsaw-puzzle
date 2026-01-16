@@ -39,7 +39,7 @@ n_features=16
 EPSILON_MAX=0.2
 EPSILON_MIN=0.1
 GAMMA=0.995
-BATCH_SIZE=5
+
 
 SAMPLE_ACTION_NUMBER=120
 
@@ -75,8 +75,8 @@ test_vert_list=np.zeros(9000)
 vert_list=np.zeros(9000)
 
 
-TARGET_MODEL_NAME="sd2rl256_3x6.pth"
-MAIN_MODEL_NAME='sd2rl_main256_3x6.pth'
+TARGET_MODEL_NAME="model/sd2rl256_3x6.pth"
+MAIN_MODEL_NAME='model/sd2rl_main256_3x6.pth'
 
 
 
@@ -189,8 +189,8 @@ def get_reassemble_result(cur_loc, target_loc):
         if cur_loc[i] == target_loc[i]:
             cate += 1
 
-    LEFT_CENTER = 16
-    RIGHT_CENTER = 17
+    LEFT_CENTER = 18
+    RIGHT_CENTER = 19
 
     loc_hori_pairwise = [(cur_loc[0], cur_loc[1]), (cur_loc[1], cur_loc[2]),(cur_loc[8], cur_loc[9]), (cur_loc[9], cur_loc[10]),
                          (cur_loc[3], LEFT_CENTER), (LEFT_CENTER, cur_loc[4]),(cur_loc[11],RIGHT_CENTER),(RIGHT_CENTER,cur_loc[12]),
@@ -314,11 +314,11 @@ class fen_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super().__init__()
         self.pre_model=efficientnet_b0()
-        self.pre_model.classifier=nn.Sequential([
+        self.pre_model.classifier=nn.Sequential(
             nn.Linear(1280,hidden_size1),
             nn.ReLU(),
             nn.Dropout(0.1)
-        ])
+        )
         self.fc1=nn.Linear(2*hidden_size1,hidden_size2)
         self.relu=nn.ReLU()
         self.dropout=nn.Dropout(0.1)
@@ -657,13 +657,14 @@ class Agent:
 
             target_image_list=torch.cat([
                 target_image_list,
-                torch.tensor(get_cur_image(img1, img2, [int(x) for x in target_image_index])).unsqueeze(0)],axis=0)
+                torch.tensor(get_cur_image(img1, img2, [int(x) for x in target_image_index])).unsqueeze(0)
+                ],axis=0)
 
         target_image_list=target_image_list[1:,:,:,:]
         target_image_list=target_image_list.permute([0,3,1,2]).to(device)
         # print(target_image_list.size())
         target_image_list=target_image_list.to(device)
-        q_next=target_DQN(target_image_list)
+        q_next=target_DQN(target_image_list).detach()
         q_eval=main_DQN(target_image_list)
 
         #estimate next state q from reward
@@ -678,9 +679,11 @@ class Agent:
 
         reward=torch.tensor(batch_memory[:,self.n_features+1]).unsqueeze(1).to(device)
         # print(reward.size())
+        batch_index=np.arange(self.batch_size, dtype=np.int32)
+        # q_target=q_eval.detach().clone().squeeze()
         q_target=reward+self.gamma*q_next
         q_target=q_target.to(torch.float)
-        # print(q_target.type(),q_eval.type())
+        # print(q_target.size(),q_eval.size())
 
         #back_propogation
         loss=loss_fn(q_target,q_eval)
@@ -765,11 +768,12 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
 
         # image = get_cur_image(img1, img2, new_label)
 
-
+        action_list=[0 for _ in range(120)]
         while True:
             # RL choose action based on observation
             action = RL.choose_action(observation, hori_list[pair_idx], vert_list[pair_idx],
                                       cate_list[pair_idx], img1, img2)
+            action_list[action]+=1
             # RL take action and get next observation and reward
             observation_, reward, done, cate, _, _ = env.step(action)
             total_reward += reward
@@ -803,6 +807,7 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
 
         total_reward_list.append(total_reward / (p_step + 1))
         print(Fore.LIGHTRED_EX + f"Episode Id: {str(pair_idx)} \tTotal Reward:  {total_reward / (p_step + 1)}")
+        print(action_list)
         torch.save(target_DQN.state_dict(),TARGET_MODEL_NAME)
         torch.save(main_DQN.state_dict(),MAIN_MODEL_NAME)
 
@@ -942,7 +947,7 @@ if __name__ == "__main__":
     # maze game
     env = Puzzle_Env()
     SAMPLE_ACTION_NUMBER = 120
-    EPSILON_MAX=0.693494 # 52
+    EPSILON_MAX=0.9 
     EPSILON_MIN=0.1
     
 
@@ -953,7 +958,7 @@ if __name__ == "__main__":
                epsilon_min=EPSILON_MIN,
                epsilon_decay=GAMMA
                )  
-    run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5)
+    run_maze(load=True,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5)
 
     # target_DQN.save_weights('RL_weight/RL_SD2RL_3_512feature_model_weight_1')
 

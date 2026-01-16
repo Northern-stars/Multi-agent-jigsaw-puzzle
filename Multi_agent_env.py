@@ -208,11 +208,11 @@ class env:
             reward_a+=(permutation_a[i]%9==i)
             reward_b+=(permutation_b[i]%9==i)
 
-        if permutation_a==range(min_index_a,max_index_a):
+        if permutation_a==list(range(min_index_a,max_index_a)):
             reward_a+=DONE_REWARD
             done_a=True
         
-        if permutation_b==range(min_index_b,max_index_b):
+        if permutation_b==list(range(min_index_b,max_index_b)):
             reward_b+=DONE_REWARD
             done_b=True
 
@@ -509,9 +509,9 @@ class env:
 
     def step(self,epoch=500,load=True):#Change after determined
         if load:
-            self.critic_model.load_state_dict(torch.load("Critic"+MODEL_NAME))
-            self.actor_model.load_state_dict(torch.load("Actor"+MODEL_NAME))
-            self.outsider_model.load_state_dict(torch.load("Outsider"+MODEL_NAME))
+            self.critic_model.load_state_dict(torch.load("model/Critic"+MODEL_NAME))
+            self.actor_model.load_state_dict(torch.load("model/Actor"+MODEL_NAME))
+            self.outsider_model.load_state_dict(torch.load("model/Outsider"+MODEL_NAME))
             # self.outsider_model.load_state_dict(torch.load("outsider_model.pth"))
         for i in range(epoch):
             if i>300:
@@ -601,16 +601,16 @@ class env:
                 permutation_a=copy.deepcopy(new_permutation_a)
                 permutation_b=copy.deepcopy(new_permutation_b)
             print(f"Epoch: {i}. Success: {done==1}, step: {step},reward: {(reward_a_sum/step,reward_b_sum/step)}")
-            torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
-            torch.save(self.outsider_model.state_dict(),"Outsider"+MODEL_NAME)
-            torch.save(self.actor_model.state_dict(),"Actor"+MODEL_NAME)
+            torch.save(self.critic_model.state_dict(),"model/Critic"+MODEL_NAME)
+            torch.save(self.outsider_model.state_dict(),"model/Outsider"+MODEL_NAME)
+            torch.save(self.actor_model.state_dict(),"model/Actor"+MODEL_NAME)
 
 
     def double_step(self,epoch=500,load=True):#Change after determined
         if load:
-            self.critic_model.load_state_dict(torch.load("Critic"+MODEL_NAME))
-            self.actor_model.load_state_dict(torch.load("Actor"+MODEL_NAME))
-            self.outsider_model.load_state_dict(torch.load("Outsider"+MODEL_NAME))
+            self.critic_model.load_state_dict(torch.load("model/Critic"+MODEL_NAME))
+            self.actor_model.load_state_dict(torch.load("model/Actor"+MODEL_NAME))
+            self.outsider_model.load_state_dict(torch.load("model/Outsider"+MODEL_NAME))
             # self.outsider_model.load_state_dict(torch.load("outsider_model.pth"))
         for i in range(epoch):
             if i>300:
@@ -714,9 +714,9 @@ class env:
                 permutation_a=copy.deepcopy(new_permutation_a)
                 permutation_b=copy.deepcopy(new_permutation_b)
             print(f"Epoch: {i}. Success: {done==1}, step: {step},reward: {(reward_a_sum/step,reward_b_sum/step)}")
-            torch.save(self.critic_model.state_dict(),"Critic"+MODEL_NAME)
-            torch.save(self.outsider_model.state_dict(),"Outsider"+MODEL_NAME)
-            torch.save(self.actor_model.state_dict(),"Actor"+MODEL_NAME)
+            torch.save(self.critic_model.state_dict(),"model/Critic"+MODEL_NAME)
+            torch.save(self.outsider_model.state_dict(),"model/Outsider"+MODEL_NAME)
+            torch.save(self.actor_model.state_dict(),"model/Actor"+MODEL_NAME)
 
 
 

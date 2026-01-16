@@ -344,9 +344,9 @@ class env:
 
         
         if load:
-            self.critic_model.load_state_dict(torch.load("Critic" + MODEL_NAME))
+            self.critic_model.load_state_dict(torch.load("model/Critic" + MODEL_NAME))
             for j in range(self.image_num):
-                self.actor_model_list[j].load_state_dict(torch.load(f"Actor_{j}" + MODEL_NAME))
+                self.actor_model_list[j].load_state_dict(torch.load(f"model/Actor_{j}" + MODEL_NAME))
 
         
         for i in range(epoch):
@@ -471,10 +471,10 @@ class env:
             print(f"Epoch {i}: step={step}, done: {done}, return={[sum(r)/step for r in reward_sum_list]}, critic_loss_sum= {critic_loss_sum}")
             print(f"Action list: {self.action_list}")
             print(f"Final permutation: {permutation_list}")
-            torch.save(self.critic_model.state_dict(), "Critic" + MODEL_NAME)
+            torch.save(self.critic_model.state_dict(), "model/Critic" + MODEL_NAME)
             self.critic_schedular.step()
             for j in range(self.image_num):
-                torch.save(self.actor_model_list[j].state_dict(), f"Actor_{j}" + MODEL_NAME)
+                torch.save(self.actor_model_list[j].state_dict(), f"model/Actor_{j}" + MODEL_NAME)
                 self.actor_schedular_list[j].step()
 
 

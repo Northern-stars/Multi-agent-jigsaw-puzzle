@@ -8,7 +8,7 @@ import copy
 import torch
 import itertools
 from torch import nn
-from torchvision.models import efficientnet_b0,efficientnet_b3
+from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
 import Vit
 from tqdm import tqdm
@@ -33,7 +33,6 @@ test_y=np.load(test_y_path)
 
 HORI_MODEL_NAME="model/hori_ef0.pth"
 VERT_MODEL_NAME="model/vert_ef0.pth"
-EF_MODEL_NAME="model/pairwise_pretrain_ef.pth"
 BATCH_SIZE=150
 
 class imageData(Dataset):
@@ -140,8 +139,8 @@ device="cuda" if torch.cuda.is_available() else "cpu"
 class pretrain_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2):
         super(pretrain_model,self).__init__()
-        self.ef=efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1536,hidden_size1)
+        self.ef=efficientnet_b0(weights="DEFAULT")
+        self.ef.classifier=nn.Linear(1280,hidden_size1)
         # self.ef=Vit.VisionTransformer(
         # picture_size=[5,3,96,96],
         # patch_size=12,
@@ -152,8 +151,7 @@ class pretrain_model(nn.Module):
         # unet_hidden=hidden_size1,
         # output_channel=3
         # )
-        self.contrast_fc_hori=nn.Linear(2*hidden_size1,hidden_size2)
-        self.contrast_fc_vert=nn.Linear(2*hidden_size1,hidden_size2)
+        self.contrast_fc=nn.Linear(2*hidden_size1,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
         self.dp1=nn.Dropout1d(p=0.3)
@@ -165,31 +163,26 @@ class pretrain_model(nn.Module):
             nn.Sigmoid()
         )
     def forward(self,x1,x2):
-        feature_tensor=torch.cat([self.ef(x1),self.ef(x2)],dim=-1)
-        hori_x=self.contrast_fc_hori(feature_tensor)
-        hori_x=self.bn1(hori_x)
-        hori_x=self.relu1(hori_x)
-        hori_x=self.dp1(hori_x)
-        hori_x=self.fc2(hori_x)
-        hori_x=self.bn2(hori_x)
-        hori_x=self.relu2(hori_x)
-        hori_out=self.outlayer(hori_x)
+        feature1=self.ef(x1)
+        feature2=self.ef(x2)
 
-        vert_x=self.contrast_fc_vert(feature_tensor)
-        vert_x=self.bn1(vert_x)
-        vert_x=self.relu1(vert_x)
-        vert_x=self.dp1(vert_x)
-        vert_x=self.fc2(vert_x)
-        vert_x=self.bn2(vert_x)
-        vert_x=self.relu2(vert_x)
-        vert_out=self.outlayer(vert_x)
-        return hori_out,vert_out
+        feature_tensor=torch.cat([feature1,feature2],dim=-1)
+        pairwise_feature=self.contrast_fc(feature_tensor)
+        pairwise_feature=self.bn1(pairwise_feature)
+        pairwise_feature=self.relu1(pairwise_feature)
+        pairwise_feature=self.dp1(pairwise_feature)
+        pairwise_feature=self.fc2(pairwise_feature)
+        pairwise_feature=self.bn2(pairwise_feature)
+        pairwise_feature=self.relu2(pairwise_feature)
+        out=self.outlayer(pairwise_feature)
+        return out
 
 
 
 
 
-model=pretrain_model(1024,256).to(device)
+hori_model=pretrain_model(512,512).to(device)
+vert_model=pretrain_model(512,512).to(device)
 # hori_model=pretrain_model(256,256).to(device)
 # vert_model=pretrain_model(256,256).to(device)
 
@@ -198,7 +191,8 @@ model=pretrain_model(1024,256).to(device)
 loss_fn=nn.BCELoss()
 # hori_optimizer=torch.optim.Adam(hori_model.parameters(),lr=1e-4,eps=1e-8)
 # vert_optimizer=torch.optim.Adam(vert_model.parameters(),lr=1e-4,eps=1e-8)
-optimizer=torch.optim.Adam(model.parameters(),lr=1e-3,eps=1e-8)
+hori_optimizer=torch.optim.Adam(hori_model.parameters(),lr=1e-4,eps=1e-8)
+vert_optimizer=torch.optim.Adam(vert_model.parameters(),lr=1e-4,eps=1e-8)
 
 
 def single_train(model,optimizer,data,label):
@@ -230,63 +224,40 @@ def single_train_vert(model,optimizer,data,label):
 
 def train(epoch_num=5000,load=True):
     if load:
-        model.load_state_dict(torch.load(MODEL_NAME))
-        # hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
-        # vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
+        # model.load_state_dict(torch.load(MODEL_NAME))
+        hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
+        vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
     print("start training")
-    model.train()
-    # hori_model.train()
-    # vert_model.train()
+    # model.train()
+    hori_model.train()
+    vert_model.train()
     for epoch in range(epoch_num):
         hori_loss_sum=0
         vert_loss_sum=0
         for final_image_hori_a,final_image_hori_b,final_image_vert_a,final_image_vert_b,hori_label,vert_label in tqdm(train_dataloader):
-            hori_loss_sum+=single_train_hori(model=model,optimizer=optimizer,data=[final_image_hori_a,final_image_hori_b],label=hori_label)
-            vert_loss_sum+=single_train_vert(model=model,optimizer=optimizer,data=[final_image_vert_a,final_image_vert_b],label=vert_label)
+            # hori_loss_sum+=single_train_hori(model=model,optimizer=optimizer,data=[final_image_hori_a,final_image_hori_b],label=hori_label)
+            # vert_loss_sum+=single_train_vert(model=model,optimizer=optimizer,data=[final_image_vert_a,final_image_vert_b],label=vert_label)
+            hori_loss_sum+=single_train(model=hori_model,optimizer=hori_optimizer,data=[final_image_hori_a,final_image_hori_b],label=hori_label)
+            vert_loss_sum+=single_train(model=vert_model,optimizer=vert_optimizer,data=[final_image_vert_a,final_image_vert_b],label=vert_label)
 
             
+            
         print(f"epochnum: {epoch}, hori_loss_sum: {hori_loss_sum*BATCH_SIZE}, vert_loss_sum: {vert_loss_sum*BATCH_SIZE}")
-        torch.save(model.state_dict(),MODEL_NAME)
-        torch.save(model.ef.state_dict(),EF_MODEL_NAME)
-        # torch.save(hori_model.state_dict(),HORI_MODEL_NAME)
-        # torch.save(vert_model.state_dict(),VERT_MODEL_NAME)
+        # torch.save(model.state_dict(),MODEL_NAME)
+        torch.save(hori_model.state_dict(),HORI_MODEL_NAME)
+        torch.save(vert_model.state_dict(),VERT_MODEL_NAME)
 
 
 
-# def test():
-#     with torch.no_grad():
-#         model.load_state_dict(torch.load(MODEL_NAME))
-#         model.eval()
-#         # hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
-#         # vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
-#         # hori_model.eval()
-#         # vert_model.eval()
-#         hori_right=0
-#         vert_right=0
-#         print("start testing")
-#         for batch_num,(final_image_hori_a,final_image_hori_b,final_image_vert_a,final_image_vert_b,hori_label,vert_label) in enumerate(test_dataloader):
-#             # hori_output=torch.argmax(hori_model(final_image_hori_a.to(device),final_image_hori_b.to(device))).item()
-#             # vert_output=torch.argmax(vert_model(final_image_vert_a.to(device),final_image_vert_b.to(device))).item()
-#             hori_output,_=model(final_image_hori_a.to(device),final_image_hori_b.to(device))
-#             _,vert_output=model(final_image_vert_a.to(device),final_image_vert_b.to(device))
-#             # hori_output=torch.argmax(hori_output).item()
-#             # vert_output=torch.argmax(vert_output).item()
-#             hori_output=torch
-#             hori_right+=(hori_output==hori_label.item())
-#             vert_right+=(vert_output==vert_label.item())
-#             if (batch_num+1)%100==0:
-#                 print(f"batch num: {batch_num+1}, hori right level: {hori_right/(batch_num+1)}, vert right level: {vert_right/(batch_num+1)}")
-        
-#     print(f"hori right level: {hori_right/len(test_dataloader)}, vert right level: {vert_right/len(test_dataloader)}")
-
-def test():
+def test(hori_model,vert_model):
     """二分类测试函数"""
     with torch.no_grad():
-        model.load_state_dict(torch.load(MODEL_NAME))
-        model.eval()
+        # model.load_state_dict(torch.load(MODEL_NAME))
+        # model.eval()
         # hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
         # vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
-
+        hori_model.eval()
+        vert_model.eval()
         
         hori_right = 0
         vert_right = 0
@@ -302,8 +273,8 @@ def test():
             #     final_image_hori_b.to(device)
             # )
 
-            hori_output,_=model(final_image_hori_a.to(device),final_image_hori_b.to(device))
-            _,vert_output=model(final_image_vert_a.to(device),final_image_vert_b.to(device))
+            hori_output=hori_model(final_image_hori_a.to(device),final_image_hori_b.to(device))
+            vert_output=vert_model(final_image_vert_a.to(device),final_image_vert_b.to(device))
             
             # 二分类：使用0.5作为阈值
             # hori_output和vert_output已经是sigmoid输出，在[0, 1]之间
@@ -342,10 +313,12 @@ def test():
         
         return hori_accuracy, vert_accuracy
     
-
+    
 if __name__=="__main__":
-    # HORI_MODEL_NAME="hori_ef0.pth"
-    # VERT_MODEL_NAME="vert_ef0.pth"
-    MODEL_NAME="model/pairwise_pretrain.pth"
-    # train(100,load=False)
-    test()
+    HORI_MODEL_NAME="model/hori_ef0.pth"
+    VERT_MODEL_NAME="model/vert_ef0.pth"
+    # MODEL_NAME="model/pairwise_pretrain.pth"
+    train(100,load=True)
+    hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
+    vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
+    test(hori_model,vert_model)

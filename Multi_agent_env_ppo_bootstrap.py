@@ -876,7 +876,7 @@ class env:
                     reward_sum_list[j].append(reward_list[j])
 
                     prev_state,prev_action,prev_log_prob,_=pending_transitions[j]
-                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j]-last_reward_list[j])
+                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j])
                 
                 done = all(done_list)
                 
@@ -889,7 +889,7 @@ class env:
                     self.trace_start_point=self.memory_counter
                 elif train_flag and len(self.mkv_memory)>0:
                     train_flag=False
-                    self.epsilon/=(EPSILON_GAMMA**5)
+                    self.epsilon/=(EPSILON_GAMMA)
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
                     # self.clean_memory()
@@ -914,7 +914,7 @@ class env:
             print(f"Permutation list: {permutation_list}")
             for j in range(self.image_num):
                 if termination_list[j]>=20:
-                    self.epsilon/=(EPSILON_GAMMA**5)
+                    self.epsilon/=(EPSILON_GAMMA)
             if len(self.mkv_memory)>0:
                 self.update(show=True)
             if self.epsilon>EPSILON_MIN:

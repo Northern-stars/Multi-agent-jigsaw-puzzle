@@ -37,8 +37,8 @@ LOAD_MODEL=False
 SWAP_NUM=[4,2,8,8]
 MAX_STEP=[400,200,400,400]
 MODEL_NAME="(5).pth"
-ACTOR_PATH=os.path.join("Actor"+MODEL_NAME)
-CRITIC_PATH=os.path.join("Critic"+MODEL_NAME)
+ACTOR_PATH=os.path.join("model/Actor"+MODEL_NAME)
+CRITIC_PATH=os.path.join("model/Critic"+MODEL_NAME)
 BATCH_SIZE=20
 EPSILON=0.3
 EPSILON_GAMMA=0.995
@@ -518,19 +518,19 @@ class env:
             
             
             for a in range(len(sample_dicts)):
-                self.load_image(image_num=self.image_num,id=self.mkv_memory[a]["Image_id"])
-                do_list=self.mkv_memory[a]["Do_list"]
+                self.load_image(image_num=self.image_num,id=sample_dicts[a]["Image_id"])
+                do_list=sample_dicts[a]["Do_list"]
                 for b in range(len(do_list)):
                     
-                    current_image,current_outsider=self.get_image(self.mkv_memory[a]["State_list"][b])
+                    current_image,current_outsider=self.get_image(sample_dicts[a]["State_list"][b])
                     states.append(current_image)
                     outsider_pieces.append(current_outsider)
-                    actions.append(self.mkv_memory[a]["Action_list"][b])
-                    next_image,_=self.get_image(self.mkv_memory[a]["Next_state_list"][b])
+                    actions.append(sample_dicts[a]["Action_list"][b])
+                    next_image,_=self.get_image(sample_dicts[a]["Next_state_list"][b])
                     next_states.append(next_image)
-                    ret.append(self.mkv_memory[a]["Return_list"][do_list[b]])
-                    reward.append(self.mkv_memory[a]["Reward_list"][b])
-                    done.append(self.mkv_memory[a]["Done_list"][b])
+                    ret.append(sample_dicts[a]["Return_list"][do_list[b]])
+                    reward.append(sample_dicts[a]["Reward_list"][b])
+                    done.append(sample_dicts[a]["Done_list"][b])
 
                     
             

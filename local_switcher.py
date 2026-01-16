@@ -21,20 +21,29 @@ class Local_switcher:
                  batch_size,
                  env:Env,
                  action_num,
-                 tau=1e-3):
+                 tau=1e-3,
+                 recommand=True,
+                 recommand_num=10):
         
         self.model=model
         self.main_model=copy.deepcopy(self.model)
         self.optimizer=torch.optim.Adam(self.main_model.parameters(),lr=ACTOR_LR,eps=1e-8)
         self.schedular=torch.optim.lr_scheduler.StepLR(self.optimizer,step_size=ACTOR_SCHEDULAR_STEP)
+        self.tau=tau
+        
         self.memory_size=memory_size
         self.memory=[]
         self.memory_counter=0
         self.gamma=gamma
         self.batch_size=batch_size
+        
         self.env=env
+        
         self.action_num=action_num
-        self.tau=tau
+
+
+        self.recommand=recommand
+        self.recommand_num=recommand_num
     
     def epsilon_greedy(self,action):
         prob=random.random()
@@ -66,23 +75,29 @@ class Local_switcher:
     
     def permute(self,cur_permutation,action_index):
         # print("Local switcher permuting")
-        if action_index==self.action_num-1:
-            return cur_permutation
-        new_permutation=copy.deepcopy(cur_permutation)
-        action=list(itertools.combinations(list(range(len(cur_permutation))), 2))[action_index]
-        value0=cur_permutation[action[0]]
-        value1=cur_permutation[action[1]]
-        new_permutation[action[0]]=value1
-        new_permutation[action[1]]=value0
-        return new_permutation
+        # if action_index==self.action_num-1:
+        #     return cur_permutation
+        # new_permutation=copy.deepcopy(cur_permutation)
+        # action=list(itertools.combinations(list(range(len(cur_permutation))), 2))[action_index]
+        # value0=cur_permutation[action[0]]
+        # value1=cur_permutation[action[1]]
+        # new_permutation[action[0]]=value1
+        # new_permutation[action[1]]=value0
+        return self.env.permute(cur_permutation,action_index)
 
     def choose_action(self,permutation,image_index):
         perm_=copy.deepcopy(permutation)
+        action_list=[]
         value_list=[]
         image_list=[]
         outsider_list=[]
 
-        for i in range(self.action_num):
+        if self.recommand:
+            action_list=self.recommanded_action(permutation,image_index)
+        else:
+            action_list=list(range(self.action_num))
+
+        for i in action_list:
             perm_=self.permute(permutation,i)
             image,_=self.env.get_image(perm_,image_index=image_index)
             image_list.append(copy.deepcopy(image.cpu()))
@@ -90,8 +105,8 @@ class Local_switcher:
         
         i=0
         with torch.no_grad():
-            while i < self.action_num:
-                if self.action_num-i<self.batch_size:
+            while i < len(image_list):
+                if len(image_list)-i<self.batch_size:
                     image=torch.cat(image_list[i:],dim=0).to(DEVICE)
                     # outsider=torch.cat(outsider_list[i:],dim=0).to(DEVICE)
                 else:
@@ -103,8 +118,21 @@ class Local_switcher:
                 i+=self.batch_size
             
             value_list=torch.cat(value_list)
-            best_action=torch.argmax(value_list).item()
-        return int(best_action)
+            best_action=int(torch.argmax(value_list).item())
+        return action_list[best_action]
+
+    def recommanded_action(self,permutation,image_index):
+        permutation_copy=copy.deepcopy(permutation)
+        score_list=np.zeros(self.action_num)
+        for i in range(self.action_num):
+            permutation_copy=self.permute(permutation,i)
+            score_list[i]=self.env.get_local_score(permutation_copy,image_index)
+        best_action=(np.argsort(score_list)[::-1]).tolist()
+        return best_action[:self.recommand_num]
+
+
+        
+
 
     def update(self,show=False):
         # print("Updating local switcher")

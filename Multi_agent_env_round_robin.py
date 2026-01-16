@@ -42,16 +42,16 @@ ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
-LOAD_MODEL=False
-SWAP_NUM=[2,3,4,8]
-MAX_STEP=[40,40,30,20]
+LOAD_MODEL=True
+SWAP_NUM=[4,4,4,8]
+MAX_STEP=[20,20,20,20]
 PHASE_SWITCH_NUM=10
 MODEL_NAME="(2)_RoundRobin.pth"
 MODEL_PATH=os.path.join("model/DQN"+MODEL_NAME)
 
 
 BATCH_SIZE=20
-EPSILON=0.3
+EPSILON=0.2
 EPSILON_GAMMA=0.998
 EPSILON_MIN=0.1
 AGENT_EPOCHS=5
@@ -437,6 +437,52 @@ class Env:
         print(f"Initial permutation {initial_permutation}")
         self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
+        
+    def get_accuracy(self,permutation_list):
+        permutation_copy=copy.deepcopy(permutation_list)
+        for i in range(len(permutation_list)):
+            permutation_copy[i].insert(self.piece_num//2,i*self.piece_num+self.piece_num//2)
+        done_list=[0 for i in range(len(permutation_copy))]
+        consistency_list=[0 for i in range(len(permutation_copy))]
+        category_list=[0 for i in range(len(permutation_copy))]
+        hori_list=[0 for i in range(len(permutation_copy))]
+        vert_list=[0 for i in range(len(permutation_copy))]
+        edge_length=int(len(permutation_copy[0])**0.5)
+        piece_num=len(permutation_copy[0])
+        hori_set=[(i,i+1) for i in [j for j in range(piece_num) if j%edge_length!=edge_length-1 ]]
+        vert_set=[(i,i+edge_length) for i in range(piece_num-edge_length)]
+
+        for i in range(len(permutation_list)):
+            for j in range(len(hori_set)):#Pair reward
+
+                hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
+                vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==i):
+                    hori_list[i]+=1
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==i):
+                    vert_list[i]+=1
+            piece_range=[0 for j in range (len(permutation_list))]
+            for j in range(piece_num):
+                if permutation_copy[i][j]!=-1:
+                    piece_range[permutation_copy[i][j]//piece_num]+=1
+                    category_list[i]+=(permutation_copy[i][j]%piece_num==j and permutation_copy[i][j]//piece_num==i)#Category reward
+            
+            max_piece=piece_range[i]
+
+            consistency_list[i]=max_piece
+
+            start_index=min(permutation_copy[i])//piece_num*piece_num
+            if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
+                done_list[i]=1
+        done_accuracy=np.mean(done_list)
+        consistency_accuracy=np.mean([(consistency_list[i]-1)/(piece_num-1) for i in range(len(permutation_list))])
+        category_accuracy=np.mean([category_list[i]/(piece_num-1) for i in range(len(permutation_list))])
+        hori_accuracy=np.mean([hori_list[i]/len(hori_set) for i in range(len(permutation_list))])
+        vert_accuracy=np.mean([vert_list[i]/len(vert_set) for i in range(len(permutation_list))])
+        return done_accuracy,consistency_accuracy,category_accuracy,hori_accuracy,vert_accuracy
+
+
+
 
 
 
@@ -874,15 +920,15 @@ def load(local_switcher,buffer_switcher):
     local_switcher.main_model=copy.deepcopy(local_switcher.model)
 
 
-def local_switch_phase(env:Env,local_switcher:Local_switcher,max_step):
+def local_switch_phase(env:Env,local_switcher:Local_switcher,max_step,test_flag=False):
     terminal_list=[False for _ in range(env.image_num)]
     pending_transition={j:None for j in range(env.image_num)}
     step=0
-    while not (all(terminal_list)or all(env.done_list) or step>max_step) :
+    while not (all(terminal_list)or (all(env.done_list) and not test_flag) or step>max_step) :
         step+=1
         do_list=[]
         for i in range(env.image_num):
-            if env.done_list[i]:
+            if env.done_list[i] and not test_flag:
                 terminal_list[i]=True
             if terminal_list[i]:
                 continue
@@ -892,24 +938,28 @@ def local_switch_phase(env:Env,local_switcher:Local_switcher,max_step):
             permutation_,action=local_switcher.act(permutation,image_index=i)
 
             if action==local_switcher.action_num-1:
-                terminal_list[i]=True
+                if test_flag:
+                    terminal_list[i]=True
+                else:
+                    action=random.randint(0,local_switcher.action_num-2)
+                    permutation_=local_switcher.permute(permutation,action)
             
             pending_transition[i]=(permutation,action,permutation_)
             env.permutation_list[i]=permutation_
-        
-        local_reward_list,_,env.done_list,_=env.get_reward(env.permutation_list)
-        for i in do_list:
-            if pending_transition[i] is not None:
-                cur_state,action,next_state=pending_transition[i]
-                local_switcher.recording_memory(
-                    image_id=env.image_id,
-                    image_index=i,
-                    state=cur_state,
-                    action=action,
-                    reward=local_reward_list[i],
-                    next_state=next_state,
-                    done=(env.done_list[i] or terminal_list[i])
-                )
+        if not test_flag:
+            local_reward_list,_,env.done_list,_=env.get_reward(env.permutation_list)
+            for i in do_list:
+                if pending_transition[i] is not None:
+                    cur_state,action,next_state=pending_transition[i]
+                    local_switcher.recording_memory(
+                        image_id=env.image_id,
+                        image_index=i,
+                        state=cur_state,
+                        action=action,
+                        reward=local_reward_list[i],
+                        next_state=next_state,
+                        done=(env.done_list[i] or terminal_list[i])
+                    )
         if SHOW_IMAGE:
             env.show_image(env.permutation_list)
         
@@ -919,24 +969,29 @@ def local_switch_phase(env:Env,local_switcher:Local_switcher,max_step):
             
 
 
-def buffer_switch_phase(env:Env,buffer_switcher:Buffer_switcher,max_step):
+def buffer_switch_phase(env:Env,buffer_switcher:Buffer_switcher,max_step,test_flag=False):
     step=0
     terminal_flag=False
-    while not (terminal_flag or all(env.consistency_list) or step>max_step):
+    while not (terminal_flag or (all(env.consistency_list) and not test_flag) or step>max_step):
         step+=1
         perm_,action=buffer_switcher.act(env.permutation_list)
         if action==buffer_switcher.action_num-1:
-            terminal_flag=True
-        _,consistency_reward_list,_,env.consistency_list=env.get_reward(perm_)
-        buffer_switcher.recording_memory(
-            image_id=env.image_id,
-            image_index=None,
-            state=env.permutation_list,
-            action=action,
-            reward=sum(consistency_reward_list),
-            next_state=perm_,
-            done=(all(env.consistency_list) or terminal_flag)
-        )
+            if test_flag:
+                terminal_flag=True
+            else:
+                action=random.randint(0,buffer_switcher.action_num-2)
+                perm_=buffer_switcher.permute(env.permutation_list,action)
+        if not test_flag:
+            _,consistency_reward_list,_,env.consistency_list=env.get_reward(perm_)
+            buffer_switcher.recording_memory(
+                image_id=env.image_id,
+                image_index=None,
+                state=env.permutation_list,
+                action=action,
+                reward=sum(consistency_reward_list),
+                next_state=perm_,
+                done=(all(env.consistency_list) or terminal_flag)
+            )
         env.permutation_list=perm_
 
         if SHOW_IMAGE:
@@ -968,7 +1023,7 @@ def run_maze(env:Env,buffer_switcher:Buffer_switcher,local_switcher:Local_switch
                 max_step, swap_num = MAX_STEP[0], SWAP_NUM[0]
         
         env.summon_permutation_list(swap_num)
-        clean_memory(local_switcher,buffer_switcher)
+        # clean_memory(local_switcher,buffer_switcher)
         reward_sum_list= [0 for _ in range(env.image_num)]
 
         step=0
@@ -980,7 +1035,7 @@ def run_maze(env:Env,buffer_switcher:Buffer_switcher,local_switcher:Local_switch
             local_reward,consistency_reward,env.done_list,env.consistency_list=env.get_reward(env.permutation_list)
             reward_sum_list=[reward_sum_list[j]+local_reward[j]+consistency_reward[j] for j in range(env.image_num)]
             update(local_switcher,buffer_switcher)
-        print(f"Epoch: {i}, step: {step}, done: {all(env.done_list)}, reward: {[reward_sum_list[j]/step if step !=0 else 0for j in range(len(reward_sum_list)) ]}")
+        print(f"Epoch: {i}, step: {step}, done: {all(env.done_list)}, reward: {[reward_sum_list[j]/step if step!=0 else 0 for j in range(len(reward_sum_list)) ]}")
         print(f"Permutation list: {env.permutation_list}")
         if env.epsilon>EPSILON_MIN:
             env.epsilon*=EPSILON_GAMMA
@@ -993,8 +1048,37 @@ def run_maze(env:Env,buffer_switcher:Buffer_switcher,local_switcher:Local_switch
             local_switcher=local_switcher,
             buffer_switcher=buffer_switcher
         )
-            
+
+
+
+
                 
+
+def test(env:Env,buffer_switcher:Buffer_switcher,local_switcher:Local_switcher,test_num=300):
+    load(local_switcher=local_switcher,buffer_switcher=buffer_switcher)
+    accuracy=[]
+    consistency_accuracy=[]
+    hori_accuracy=[]
+    vert_accuracy=[]
+    category_accuracy=[]
+    for i in range(test_num):
+        env.summon_permutation_list(swap_num=8)
+        for _ in range(PHASE_SWITCH_NUM):
+            buffer_switch_phase(env,buffer_switcher,max_step=200,test_flag=True)
+            local_switch_phase(env,local_switcher,max_step=200,test_flag=True)
+            local_reward,consistency_reward,done_list,consistency_list=env.get_reward(env.permutation_list)
+            if all(done_list):
+                break
+        done,consistency,category,hori,vert=env.get_accuracy(env.permutation_list)
+        accuracy.append(done)
+        consistency_accuracy.append(consistency)
+        hori_accuracy.append(hori)
+        vert_accuracy.append(vert)
+        category_accuracy.append(category)
+        print(f"Test num:{i}, id:{env.image_id}, done_accuracy: {np.mean(accuracy)}, consistency_accuracy: {np.mean(consistency_accuracy)}, category_accuracy: {np.mean(category_accuracy)}, hori_accuracy: {np.mean(hori_accuracy)}, vert_accuracy: {np.mean(vert_accuracy)}")
+
+
+
 
 
 
@@ -1017,6 +1101,7 @@ if __name__ == "__main__":
         action_num=1
     ).to(DEVICE)
     # buffer_switcher_model.load_state_dict(torch.load("model/outsider_switcher_pretrain.pth"))
+    buffer_switcher_model.fen_model.load_state_dict(torch.load("model/central_fen.pth"))
     buffer_switcher=Buffer_switcher(
         memory_size=1000,
         model=buffer_switcher_model,
@@ -1031,7 +1116,7 @@ if __name__ == "__main__":
                                               hidden1=2048,
                                               hidden2=1024,
                                               action_num=1).to(DEVICE)
-    # local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
+    local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(
         memory_size=1000,
         gamma=environment.gamma,

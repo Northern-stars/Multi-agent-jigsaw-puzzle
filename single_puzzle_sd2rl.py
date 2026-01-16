@@ -56,8 +56,8 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
         env.summon_permutation_list(swap_num)
         reward_sum_list=[[] for _ in range(env.image_num)]
         step=0
-        reward_list,_,env.done_list,_=env.get_reward(env.permutation_list)
         done_list=[False for _ in range(env.image_num)]
+        reward_list,_,done_list,_=env.get_reward(env.permutation_list)
         while step<max_step and not all(done_list):
             step+=1
             do_list=[]
@@ -68,8 +68,8 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
                 if action==local_switcher.action_num-1:
                     action=random.randint(0,local_switcher.action_num-2)
                     permutation_=local_switcher.permute(permutation,action)
-            pending_transition[j]=(permutation,action,permutation_)
-            env.permutation_list[j]=permutation_
+                pending_transition[j]=(permutation,action,permutation_)
+                env.permutation_list[j]=permutation_
             reward_list,_,done_list,_=env.get_reward(env.permutation_list)
             for j in do_list:
                 reward_sum_list[j].append(reward_list[j])

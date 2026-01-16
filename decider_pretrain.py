@@ -25,7 +25,7 @@ train_y=np.load(train_y_path)
 test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
-BATCH_SIZE=200
+BATCH_SIZE=100
 TEST_PER_EPOCH=20
 MODEL_NAME="model/decider_pretrain.pth"
 
@@ -170,6 +170,7 @@ class imageData(Dataset):
             image=torch.tensor(data[i]).permute(2,0,1).to(torch.float)
             image_fragments={}
             for j in range(len(imageLabel)):image_fragments[imageLabel[j]]=image[:,(j//3)*96:(j//3+1)*96,(j%3)*96:(j%3+1)*96]
+            
             central_image=image_fragments[4]
             # image_fragments.pop(4)
 
@@ -302,7 +303,7 @@ def test():
         print(f"Pred count: {pred_count}\nPred distribution: {pred_count/np.sum(pred_count)}")
 
 if __name__=="__main__":
-    # train(epoch_num=500,load=False)
-    # test()
-    model.load_state_dict(torch.load(MODEL_NAME))
-    torch.save(model.fen_model.state_dict(),"model/decider_outsider_fen.pth")
+    train(epoch_num=500,load=False)
+    test()
+    # model.load_state_dict(torch.load("outsider_switcher_pretrain.pth"))
+    # torch.save(model.fen_model.state_dict(),"decider_outsider_fen.pth")
