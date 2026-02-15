@@ -11,6 +11,8 @@ from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
 import Vit
+from fen_model import Modulator
+from piece_compare import DeepuzzleModel_pieceStyle
 from tqdm import tqdm
 
 
@@ -31,9 +33,12 @@ train_y=np.load(train_y_path)
 test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
-HORI_MODEL_NAME="model/hori_ef0.pth"
-VERT_MODEL_NAME="model/vert_ef0.pth"
-BATCH_SIZE=150
+MODEL="piece_style"
+
+HORI_MODEL_NAME=f"model/hori_{MODEL}.pth"
+VERT_MODEL_NAME=f"model/vert_{MODEL}.pth"
+BATCH_SIZE=100
+LOAD=False
 
 class imageData(Dataset):
     def __init__(self,data,label):
@@ -42,6 +47,7 @@ class imageData(Dataset):
         self.choice=list(itertools.combinations(list(range(9)), 2))
         self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
         self.vert_set=[(i,i+3) for i in range(3*2)]
+        self.sector_num=np.max([1,self.data.shape[0]//3])
     def __len__(self):
         return len(self.data)
     def __getitem__(self, index):
@@ -59,28 +65,6 @@ class imageData(Dataset):
             image[:,192:288,96:192],
             image[:,192:288,192:288]
         ]
-        hori_label=0
-        vert_label=0
-        
-        right=random.random()
-        if right>=0.5:
-            vert_label=1
-            hori_label=1
-
-            hori_idx=random.choice(self.hori_set)
-            vert_idx=random.choice(self.vert_set)
-
-        else:
-            vert_label=0
-            hori_label=0
-
-            hori_idx=(random.randint(0,8),random.randint(0,8))
-            while (hori_idx in self.hori_set) or (hori_idx[0]==hori_idx[1]):
-                hori_idx=(random.randint(0,8),random.randint(0,8))
-            vert_idx=(random.randint(0,8),random.randint(0,8))
-            while (vert_idx in self.vert_set) or (vert_idx[0]==vert_idx[1]):
-                vert_idx=(random.randint(0,8),random.randint(0,8))
-
         imageLabel=self.label[index]
         imageLabel=list(imageLabel)
         # print(imageLabel)
@@ -97,13 +81,50 @@ class imageData(Dataset):
                         break
         imageLabel.insert(4,4)
         # print(imageLabel)
+        hori_label=0
+        vert_label=0
+        
+        right=random.random()
+        if right>=0.5:
+            vert_label=1
+            hori_label=1
 
+            hori_idx=random.choice(self.hori_set)
+            vert_idx=random.choice(self.vert_set)
 
+            final_image_hori_a=image_fragments[imageLabel.index(hori_idx[0])]
+            final_image_hori_b=image_fragments[imageLabel.index(hori_idx[1])]
+            final_image_vert_a=image_fragments[imageLabel.index(vert_idx[0])]
+            final_image_vert_b=image_fragments[imageLabel.index(vert_idx[1])]
 
-        final_image_hori_a=image_fragments[imageLabel.index(hori_idx[0])]
-        final_image_hori_b=image_fragments[imageLabel.index(hori_idx[1])]
-        final_image_vert_a=image_fragments[imageLabel.index(vert_idx[0])]
-        final_image_vert_b=image_fragments[imageLabel.index(vert_idx[1])]
+        else:
+            vert_label=0
+            hori_label=0
+            outsider_flag=random.random()
+            if outsider_flag>0.5:
+                guest_idx=random.randint(0,self.data.shape[0]-1)
+                while index//self.sector_num==guest_idx//self.sector_num:
+                    guest_idx=random.randint(0,self.data.shape[0]-1)
+                guest_img=torch.tensor(self.data[guest_idx]).permute([2,0,1]).to(torch.float)
+                guest_fragments=[guest_img[:,(i//3) * 96 : (i//3+ 1) * 96, (i%3) * 96 : (i%3 + 1) * 96] for i in range(9)]
+                final_image_hori_a=random.choice(image_fragments)
+                final_image_hori_b=random.choice(guest_fragments)
+                final_image_vert_a=random.choice(image_fragments)
+                final_image_vert_b=random.choice(guest_fragments)
+            else:
+                hori_idx=(random.randint(0,8),random.randint(0,8))
+                while (hori_idx in self.hori_set) or (hori_idx[0]==hori_idx[1]):
+                    hori_idx=(random.randint(0,8),random.randint(0,8))
+                vert_idx=(random.randint(0,8),random.randint(0,8))
+                while (vert_idx in self.vert_set) or (vert_idx[0]==vert_idx[1]):
+                    vert_idx=(random.randint(0,8),random.randint(0,8))
+
+                final_image_hori_a=image_fragments[imageLabel.index(hori_idx[0])]
+                final_image_hori_b=image_fragments[imageLabel.index(hori_idx[1])]
+                final_image_vert_a=image_fragments[imageLabel.index(vert_idx[0])]
+                final_image_vert_b=image_fragments[imageLabel.index(vert_idx[1])]
+        
+        
         return final_image_hori_a,final_image_hori_b,final_image_vert_a,final_image_vert_b,torch.tensor(hori_label,dtype=torch.float).unsqueeze(0),torch.tensor(vert_label,dtype=torch.float).unsqueeze(0)
 
 
@@ -137,21 +158,34 @@ device="cuda" if torch.cuda.is_available() else "cpu"
 # device="cpu"
 
 class pretrain_model(nn.Module):
-    def __init__(self,hidden_size1,hidden_size2):
+    def __init__(self,hidden_size1,hidden_size2,fen="piece_style"):
         super(pretrain_model,self).__init__()
-        self.ef=efficientnet_b0(weights="DEFAULT")
-        self.ef.classifier=nn.Linear(1280,hidden_size1)
-        # self.ef=Vit.VisionTransformer(
-        # picture_size=[5,3,96,96],
-        # patch_size=12,
-        # encoder_hidden=hidden_size1,
-        # out_size=hidden_size1,
-        # n_head=12,
-        # encoder_layer_num=12,
-        # unet_hidden=hidden_size1,
-        # output_channel=3
-        # )
-        self.contrast_fc=nn.Linear(2*hidden_size1,hidden_size2)
+        self.single_input=False
+        if fen=="ef":
+            self.ef=efficientnet_b0(weights="DEFAULT")
+            self.ef.classifier=nn.Linear(1280,hidden_size1)
+            self.single_input=True
+        elif fen=="modulator" or fen=="ef0_modulator":
+            self.ef=Modulator(512,hidden_size1)
+            self.single_input=True
+        elif fen=="piece_style":
+            self.ef=DeepuzzleModel_pieceStyle(hidden_size1,6,hidden_size1,out=hidden_size1)
+            self.single_input=False
+        elif fen=="vit":
+            self.ef=Vit.VisionTransformer(
+        picture_size=[5,3,96,96],
+        patch_size=12,
+        encoder_hidden=hidden_size1,
+        out_size=hidden_size1,
+        n_head=12,
+        encoder_layer_num=12,
+        unet_hidden=hidden_size1,
+        output_channel=3
+        )
+            self.single_input=True
+
+        if self.single_input:
+            self.contrast_fc=nn.Linear(2*hidden_size1,hidden_size2)
         self.bn1=nn.BatchNorm1d(hidden_size2)
         self.relu1=nn.ReLU()
         self.dp1=nn.Dropout1d(p=0.3)
@@ -163,11 +197,14 @@ class pretrain_model(nn.Module):
             nn.Sigmoid()
         )
     def forward(self,x1,x2):
-        feature1=self.ef(x1)
-        feature2=self.ef(x2)
+        if self.single_input:
+            feature1=self.ef(x1)
+            feature2=self.ef(x2)
+            feature_tensor=torch.cat([feature1,feature2],dim=-1)
+            pairwise_feature=self.contrast_fc(feature_tensor)
+        else:
+            pairwise_feature=self.ef(x1,x2)
 
-        feature_tensor=torch.cat([feature1,feature2],dim=-1)
-        pairwise_feature=self.contrast_fc(feature_tensor)
         pairwise_feature=self.bn1(pairwise_feature)
         pairwise_feature=self.relu1(pairwise_feature)
         pairwise_feature=self.dp1(pairwise_feature)
@@ -181,8 +218,8 @@ class pretrain_model(nn.Module):
 
 
 
-hori_model=pretrain_model(512,512).to(device)
-vert_model=pretrain_model(512,512).to(device)
+hori_model=pretrain_model(512,512,MODEL).to(device)
+vert_model=pretrain_model(512,512,MODEL).to(device)
 # hori_model=pretrain_model(256,256).to(device)
 # vert_model=pretrain_model(256,256).to(device)
 
@@ -315,10 +352,10 @@ def test(hori_model,vert_model):
     
     
 if __name__=="__main__":
-    HORI_MODEL_NAME="model/hori_ef0.pth"
-    VERT_MODEL_NAME="model/vert_ef0.pth"
+    # HORI_MODEL_NAME="model/hori_ef0.pth"
+    # VERT_MODEL_NAME="model/vert_ef0.pth"
     # MODEL_NAME="model/pairwise_pretrain.pth"
-    train(100,load=True)
+    train(100,load=LOAD)
     hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
     vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
     test(hori_model,vert_model)

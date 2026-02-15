@@ -1,0 +1,6 @@
+*.pth
+data/*
+*pycache*
+json/
+model/
+result/

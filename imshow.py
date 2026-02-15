@@ -7,9 +7,9 @@ train_x_path = 'dataset/test_img_48gap_33.npy'
 train_y_path = 'dataset/test_label_48gap_33.npy'
 
 train_x=np.load(train_x_path)
-image0=train_x[500]
+image0=train_x[1333]
 train_y=np.load(train_y_path)
-imageLabel=train_y[500]
+imageLabel=train_y[1333]
 # imageLabel=list(imageLabel)
 # for a in range(8):
 #     for b in range(8):

@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 import Vit
 # from pretrain import pretrain_model
 from pretrain_1 import pretrain_model
-from piece_compare import piece_compare_model_b3 as compare_model
+from piece_compare import DeepuzzleModel_pieceStyle as compare_model
 
 test_x_path = 'dataset/test_img_48gap_33.npy'
 test_y_path = 'dataset/test_label_48gap_33.npy'
@@ -22,20 +22,17 @@ test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-HORI_SCORE_NAME="dataset/hori_score_single_model_no_random.npy"
-VERT_SCORE_NAME="dataset/vert_score_single_model_no_random.npy"
-CATE_SCORE_NAME="dataset/cate_score.npy"
+HORI_SCORE_NAME="dataset/hori_score_piece_style.npy"
+VERT_SCORE_NAME="dataset/vert_score_piece_style.npy"
+CATE_SCORE_NAME="dataset/cate_score_9.npy"
 
 # model=pretrain_model(256,256).to(DEVICE)
 hori_model=pretrain_model(512,512).to(DEVICE)
 vert_model=pretrain_model(512,512).to(DEVICE)
-cate_model=compare_model(512,512,8).to(DEVICE)
+cate_model=compare_model(out=9).to(DEVICE)
 
 # model.load_state_dict(torch.load("model/pairwise_pretrain.pth"))
 
-hori_model.load_state_dict(torch.load("model/hori_ef0.pth"))
-vert_model.load_state_dict(torch.load("model/vert_ef0.pth"))
-cate_model.load_state_dict(torch.load("model/deepuzzle8.pth"))
 
 
 def load_score_matrix():
@@ -62,8 +59,6 @@ def load_score_matrix():
             image_label0=list(test_y[i])
             for a in range(8):
                 for b in range(8):
-                # print(type(imageLabel[i]))
-                # print(imageLabel)
                     if image_label0[a][b]==True:
                         if b>=4:
                             image_label0[a]=b+1
@@ -75,8 +70,6 @@ def load_score_matrix():
             image_label1=list(test_y[random_index])
             for a in range(8):
                 for b in range(8):
-                # print(type(imageLabel[i]))
-                # print(imageLabel)
                     if image_label1[a][b]==True:
                         if b>=4:
                             image_label1[a]=b+1
@@ -139,7 +132,7 @@ def load_cate_matrix():
     else:
         print("start calculating cate matrix")
         cate_model.eval()
-        cate_matrix=torch.zeros([1000,18,8])
+        cate_matrix=torch.zeros([1000,18,9])
         for index in range(test_x.shape[0]//2):
             if index>=666:
                 i=index+667
@@ -220,8 +213,12 @@ def get_cate_certainty(cate_matrix,img_id,position,piece_id):
         return cate_matrix[img_id,piece_id,position]
 
 
-def get_score(img_id,permutation,hori_score, vert_score,cate_score):
+def get_score(img_id,permutation,hori_score, vert_score,cate_score,permuation2=None):
     permutation_=copy.deepcopy(permutation)
+    if permuation2!=None:
+        for i in range(len(permutation_)):
+            if permutation_[i]==-1:
+                permutation_[i]=permuation2[i]
     # for j in range(len(permutation)):
     #     if (permutation_[j]>=4):permutation_[j]+=1
     #     elif permutation_[j]>=13: permutation_[j]+=2
@@ -236,31 +233,31 @@ def get_score(img_id,permutation,hori_score, vert_score,cate_score):
         if i0!=-1 & i1!=-1:
             score=hori_score[img_id][i0][i1]
 
-            if 4 in hori_set[i]:#certainty check
-                final_score+=score
-            else:
-                if hori_set[i][0] in support_list:
-                    final_score+=get_cate_certainty(cate_score,img_id,hori_set[i][0],i0)*score
-                elif hori_set[i][1] in support_list:
-                    final_score+=get_cate_certainty(cate_score,img_id,hori_set[i][1],i1)*score
+            # if 4 in hori_set[i]:#certainty check
+            #     final_score+=score
+            # else:
+            #     if hori_set[i][0] in support_list:
+            #         final_score+=get_cate_certainty(cate_score,img_id,hori_set[i][0],i0)*score
+            #     elif hori_set[i][1] in support_list:
+            #         final_score+=get_cate_certainty(cate_score,img_id,hori_set[i][1],i1)*score
             
-            # final_score+=score
+            final_score+=score
 
     for i in range(len(vert_set)):
         i0,i1=permutation_[vert_set[i][0]],permutation_[vert_set[i][1]]
         if i0!=-1 & i1!=-1:
             score=vert_score[img_id][i0][i1]
 
-            if 4 in vert_set[i]:#certainty check
-                final_score+=score
-            else:
-                if vert_set[i][0] in support_list:
-                    final_score+=get_cate_certainty(cate_score,img_id,vert_set[i][0],i0)*score
-                elif vert_set[i][1] in support_list:
-                    final_score+=get_cate_certainty(cate_score,img_id,vert_set[i][1],i1)*score
+            # if 4 in vert_set[i]:#certainty check
+            #     final_score+=score
+            # else:
+            #     if vert_set[i][0] in support_list:
+            #         final_score+=get_cate_certainty(cate_score,img_id,vert_set[i][0],i0)*score
+            #     elif vert_set[i][1] in support_list:
+            #         final_score+=get_cate_certainty(cate_score,img_id,vert_set[i][1],i1)*score
 
 
-            # final_score+=score
+            final_score+=score
     
     
     return final_score
@@ -398,14 +395,14 @@ def get_candidate(node_list):
                 candidate_list.append(new_candidate)
     return candidate_list
 
-def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,node_list):
+def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,node_list,permutation2=None):
     node_list_=copy.deepcopy(node_list)
     used_list=get_used_list(node_list)
     parent_piece=cur_node.parent.piece
     position=cur_node.absolute_position-cur_node.parent.absolute_position
     if position==-1: #left
-        # score_matrix=hori_score[img_idx,:,parent_piece]
-        score_matrix=hori_score[img_idx,0:9,parent_piece]
+        score_matrix=hori_score[img_idx,:,parent_piece]
+        # score_matrix=hori_score[img_idx,0:9,parent_piece]
         best_piece_list=np.argsort(score_matrix)[::-1]
         best_piece=int(best_piece_list[0])
         i=0
@@ -414,11 +411,11 @@ def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,no
             best_piece=int(best_piece_list[i])
         cur_node.piece=best_piece
         node_list_.append(cur_node)
-        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score)
+        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score,permutation2)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score,permutation2)
         # score=hori_score[img_idx,best_piece,parent_piece]
     elif position==1: #right
-        # score_matrix=hori_score[img_idx,parent_piece,:]
-        score_matrix=hori_score[img_idx,parent_piece,0:9]
+        score_matrix=hori_score[img_idx,parent_piece,:]
+        # score_matrix=hori_score[img_idx,parent_piece,0:9]
         best_piece_list=np.argsort(score_matrix)[::-1]
         best_piece=int(best_piece_list[0])
         i=0
@@ -427,11 +424,11 @@ def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,no
             best_piece=int(best_piece_list[i])
         cur_node.piece=best_piece
         node_list_.append(cur_node)
-        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score)
+        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score,permutation2)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score,permutation2)
         # score=hori_score[img_idx,parent_piece,best_piece]
     elif position==-3: #up
-        # score_matrix=vert_score[img_idx,:,parent_piece]
-        score_matrix=vert_score[img_idx,0:9,parent_piece]
+        score_matrix=vert_score[img_idx,:,parent_piece]
+        # score_matrix=vert_score[img_idx,0:9,parent_piece]
         best_piece_list=np.argsort(score_matrix)[::-1]
         best_piece=int(best_piece_list[0])
         i=0
@@ -440,11 +437,11 @@ def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,no
             best_piece=int(best_piece_list[i])
         cur_node.piece=best_piece
         node_list_.append(cur_node)
-        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score)
+        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score,permutation2)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score,permutation2)
         # score=vert_score[img_idx,best_piece,parent_piece]
     elif position==3: #down
-        # score_matrix=vert_score[img_idx,parent_piece,:]
-        score_matrix=vert_score[img_idx,parent_piece,0:9]
+        score_matrix=vert_score[img_idx,parent_piece,:]
+        # score_matrix=vert_score[img_idx,parent_piece,0:9]
         best_piece_list=np.argsort(score_matrix)[::-1]        
         best_piece=int(best_piece_list[0])
         i=0
@@ -454,7 +451,7 @@ def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,no
 
         cur_node.piece=best_piece
         node_list_.append(cur_node)
-        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score)
+        score=get_score(img_idx,get_permutation(node_list_),hori_score,vert_score,cate_score,permutation2)-get_score(img_idx,get_permutation(node_list),hori_score,vert_score,cate_score,permutation2)
         # score=vert_score[img_idx,parent_piece,best_piece]
     
     return cur_node,float(score)
@@ -528,9 +525,67 @@ def generating_spanning_tree(img_idx,hori_score,vert_score,cate_score):
         node_list.append(best_node)
 
         
+    #Second cover
+    permutation2=get_permutation(node_list)
+    node_list=[Node(4,None)]
+    node_list[0].piece=4
+    step=0
+    while True:
+        step+=1
+        check_valid(node_list)
+        current_candidate_list=get_candidate(node_list)
+        candidate_position=get_absolute_list(current_candidate_list)
+        # print(f"Step: {step},candidate_position: {candidate_position},node: {get_absolute_list(node_list)}")
+        # for node in node_list:
+        #     print(f"Absolute position: {node.absolute_position}, left: {node.left}, right: {node.right}, up: {node.up}, down: {node.down}")
+        
+        if len(node_list)==9:
+            break
+        # if len(current_candidate_list)==0:
+        #     break
+        best_node=None
+        best_score=0
+
+        for candidate in current_candidate_list:
+            candidate,score=get_best_candidate(img_idx,candidate,hori_score,vert_score,cate_score,node_list,permutation2)
+            if score>best_score or best_node is None:
+                best_score=score
+                best_node=candidate
+
+        best_node.set_parent()
+        node_list.append(best_node)
     
+    #Third cover
+    # permutation2=get_permutation(node_list)
+    # node_list=[Node(4,None)]
+    # node_list[0].piece=4
+    # step=0
+    # while True:
+    #     step+=1
+    #     check_valid(node_list)
+    #     current_candidate_list=get_candidate(node_list)
+    #     candidate_position=get_absolute_list(current_candidate_list)
+    #     # print(f"Step: {step},candidate_position: {candidate_position},node: {get_absolute_list(node_list)}")
+    #     # for node in node_list:
+    #     #     print(f"Absolute position: {node.absolute_position}, left: {node.left}, right: {node.right}, up: {node.up}, down: {node.down}")
+        
+    #     if len(node_list)==9:
+    #         break
+    #     # if len(current_candidate_list)==0:
+    #     #     break
+    #     best_node=None
+    #     best_score=0
+
+    #     for candidate in current_candidate_list:
+    #         candidate,score=get_best_candidate(img_idx,candidate,hori_score,vert_score,cate_score,node_list,permutation2)
+    #         if score>best_score or best_node is None:
+    #             best_score=score
+    #             best_node=candidate
+
+    #     best_node.set_parent()
+    #     node_list.append(best_node)
+
     permutation=get_permutation(node_list)
-    
     return permutation
 
 def get_local_accuracy(permutation):
@@ -554,18 +609,22 @@ def get_local_accuracy(permutation):
 
 
 
-def greedy_test(hori_score, vert_score,cate_score):
+def greedy_test(hori_score, vert_score,cate_score=None,show=False):
+    if cate_score==None:
+        cate_score=np.zeros([hori_score.shape[0],18,9])
     print("Start testing")
     right=[]
     hori_acc=[]
     vert_acc=[]
     cate_acc=[]
+    perm=[]
     error_count=0
     greedy_right_rate=[]
     # possible_permutations=generate_permutations()
     
     for i in range(hori_score.shape[0]):
-        print(f"Calculating id: {i}")
+        if show:
+            print(f"Calculating id: {i}")
         # best_score=0
         # best_perm=[]
         # for permutation in possible_permutations:
@@ -585,30 +644,39 @@ def greedy_test(hori_score, vert_score,cate_score):
         hori_acc.append(hori_right)
         vert_acc.append(vert_right)
         cate_acc.append(cate_right)
+        perm.append(best_perm)
+        
+        greedy_score=get_score(i,best_perm,hori_score,vert_score,cate_score)
+        true_score=get_score(i,list(range(0,9)),hori_score,vert_score,cate_score)
+        if show:
+            print(f"Accuracy: {np.mean(right)}, final permutation: {best_perm}")
+            print(f"Local acc: hori: {np.mean(hori_acc)}, vert: {np.mean(vert_acc)}, cate: {np.mean(cate_acc)}")
+            print(f"Greedy score: {greedy_score}, answer score: {true_score}")
+        
+
         if best_perm==list(range(0,9)):
             right.append(1)
         elif -1 in best_perm:
             error_count+=1
         else:
             right.append(0)
-        greedy_score=get_score(i,best_perm,hori_score,vert_score,cate_score)
-        true_score=get_score(i,list(range(0,9)),hori_score,vert_score,cate_score)
-        print(f"Accuracy: {np.mean(right)}, final permutation: {best_perm}")
-        print(f"Local acc: hori: {np.mean(hori_acc)}, vert: {np.mean(vert_acc)}, cate: {np.mean(cate_acc)}")
-        print(f"Greedy score: {greedy_score}, answer score: {true_score}")
-        if greedy_score>=true_score:
+        if greedy_score>true_score:
             greedy_right_rate.append(1)
         else:
             greedy_right_rate.append(0)
 
-    
-    print(f"accuracy: {np.mean(right)}, error count: {error_count},  greedy better rate: {np.mean(greedy_right_rate)}")
-    return
+
+    print(f"accuracy: {np.mean(right):.4f}, error count: {error_count},  greedy better rate: {np.mean(greedy_right_rate):.4f}")
+    return np.mean(right),np.mean(hori_acc), np.mean(vert_acc), np.mean(cate_acc),right,perm
 
 if __name__=="__main__":
+    
+    hori_model.load_state_dict(torch.load("model/hori_piece_style.pth"))
+    vert_model.load_state_dict(torch.load("model/vert_piece_style.pth"))
+    cate_model.load_state_dict(torch.load("model/deepuzzle9.pth"))
     hori_score,vert_score=load_score_matrix()
     cate_score=load_cate_matrix()
     # print(f"Hori yes: {float(hori_score[1,1,2])}, Hori no: {float(hori_score[1,2,1])}")
 
-    greedy_test(hori_score,vert_score,cate_score)
+    greedy_test(hori_score,vert_score,cate_score,True)
     score_check(hori_score,vert_score,cate_score)

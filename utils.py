@@ -34,7 +34,9 @@ def read_log(file_name):
 
 def plot_confusion_matrix(confusion_matrix,category_list,filename):
     fig = plt.figure()
+    
     ax = fig.add_subplot(111)
+    ax.set_title(filename)
     cax = ax.matshow(confusion_matrix.numpy())
     fig.colorbar(cax)
 
@@ -49,4 +51,4 @@ def plot_confusion_matrix(confusion_matrix,category_list,filename):
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
 
     # sphinx_gallery_thumbnail_number = 2
-    plt.savefig(os.path.join("result","confusion_matrix"+filename+".png"))
+    plt.savefig(os.path.join("result","confusion_matrix_"+filename+".png"))
