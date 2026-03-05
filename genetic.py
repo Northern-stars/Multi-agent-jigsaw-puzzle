@@ -9,8 +9,6 @@ import numpy as np
 import multiprocessing
 from Evaluator_dict import Evaluator
 
-random.seed(42)
-
 
 class GeneticAlgorithm:
     def __init__(self, eval, num_population=64, crossover_rate=0.8, mutation_rate=0.2, variety_decay=0.8, max_iters=20):
@@ -95,12 +93,14 @@ class GeneticAlgorithm:
         population = np.zeros((self.num_population, solution_size), dtype='int')
         for i in range(self.num_population):
             if len(init_solution) == 0:
-                temp_solution = [j for j in range(solution_size)]
+                # temp_solution = [j for j in range(solution_size)]
+                temp_solution = [j if j<4 else j+1 for j in range(solution_size)]
                 random.shuffle(temp_solution)
                 population[i] = np.array(temp_solution)
             else:
                 if i % 10 == 0:
-                    temp_solution = [j for j in range(solution_size)]
+                    # temp_solution = [j for j in range(solution_size)]
+                    temp_solution = [j if j<4 else j+1 for j in range(solution_size)]
                     random.shuffle(temp_solution)
                     population[i] = np.array(temp_solution)
                 else:

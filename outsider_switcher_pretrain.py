@@ -24,9 +24,9 @@ train_y=np.load(train_y_path)
 test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
-BATCH_SIZE=80
+BATCH_SIZE=40
 TEST_PER_EPOCH=20
-MODEL_NAME="outsider_switcher_pretrain.pth"
+MODEL_NAME="model/outsider_switcher_pretrain.pth"
 
 class fen_model(nn.Module):
     def __init__(self, hidden_size1, hidden_size2):
@@ -242,7 +242,7 @@ model=actor_model(hidden_size1=2048,
                   ,outsider_hidden_size=1024
                   ,action_num=8).to(DEVICE)
 # loss_fn=nn.CrossEntropyLoss()
-loss_fn=nn.BCEWithLogitsLoss()
+loss_fn=nn.BCELoss()
 optimizer=torch.optim.Adam(model.parameters(),lr=1e-4,eps=1e-8)
 
 train_data=imageData(data=train_x,label=train_y)
