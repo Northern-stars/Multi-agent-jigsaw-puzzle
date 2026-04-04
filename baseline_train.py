@@ -4,6 +4,7 @@ from agent.local_switcher import Local_switcher
 from utils.utils import save_log,read_log,plot_reward_curve
 import numpy as np
 import torch
+import torch.nn as nn
 import os
 import random
 
@@ -63,7 +64,7 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
             local_switcher.recommand_num=40
         else:
             max_step, swap_num = MAX_STEP[0], SWAP_NUM[0]
-            local_switcher.recommand=True
+            local_switcher.recommand=False
             local_switcher.recommand_num=20
 
 
@@ -174,10 +175,22 @@ def test(test_env:Env,test_local_switcher:Local_switcher,swap_num=5,max_step=50)
     print(f"Final acc: {np.mean(acc)}, hori: {np.mean(hori_acc)}, vert: {np.mean(vert_acc)}, cate: {np.mean(cate_acc)}")
 
 
-            
+def model_fen_load(model:nn.Module,model_name):
+    hori_pretrain=pretrain_model(512,512,model_name)
+    hori_pretrain.load_state_dict(torch.load(f"model/hori_{model_name}.pth"))
+    vert_pretrain=pretrain_model(512,512,model_name)
+    vert_pretrain.load_state_dict(torch.load(f"model/vert_{model_name}.pth"))
+    model.fen_model.hori_ef.load_state_dict(hori_pretrain.ef.state_dict())
+    model.fen_model.vert_ef.load_state_dict(vert_pretrain.ef.state_dict())
         
 
 if __name__=="__main__":
+
+
+    hori_pretrain=pretrain_model(512,512,MODEL_NAME)
+    hori_pretrain.load_state_dict(torch.load(f"model/hori_{MODEL_NAME}.pth"))
+    vert_pretrain=pretrain_model(512,512,MODEL_NAME)
+    vert_pretrain.load_state_dict(torch.load(f"model/vert_{MODEL_NAME}.pth"))
     env=Env(
         train_x,
         train_y,
@@ -185,16 +198,16 @@ if __name__=="__main__":
         image_num=2,
         epsilon=EPSILON,
         epsilon_gamma=EPSILON_GAMMA,
-        buffer_size=0
+        buffer_size=0,
+        greedy_initial=True,
+        hori_model=hori_pretrain,
+        vert_model=vert_pretrain
     )
     model=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.3).to(DEVICE)
     # model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     # model.fen_model.ef.load_state_dict(torch.load("model/pairwise_pretrain_ef.pth"))
 
-    hori_pretrain=pretrain_model(512,512,MODEL_NAME)
-    hori_pretrain.load_state_dict(torch.load(f"model/hori_{MODEL_NAME}.pth"))
-    vert_pretrain=pretrain_model(512,512,MODEL_NAME)
-    vert_pretrain.load_state_dict(torch.load(f"model/vert_{MODEL_NAME}.pth"))
+
     model.fen_model.hori_ef.load_state_dict(hori_pretrain.ef.state_dict())
     model.fen_model.vert_ef.load_state_dict(vert_pretrain.ef.state_dict())
     

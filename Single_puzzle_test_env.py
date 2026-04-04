@@ -173,7 +173,8 @@ class env:
                  piece_num=9,
                  epochs=10,
                  tau=0.01,
-                 lmb=0.95
+                 lmb=0.95,
+                 
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]

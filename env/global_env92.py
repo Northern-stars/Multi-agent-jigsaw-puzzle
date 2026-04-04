@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import itertools
-
+from agent.geneticAlgorithm import GeneticAlgorithm
 
 class Env:
     def __init__(self,
@@ -21,6 +21,9 @@ class Env:
                  tau=0.01,
                  device="cuda" if torch.cuda.is_available() else "cpu",
                  reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":0.5,"DONE_REWARD":1000,"CONSISTENCY_REWARD":100,"PANELTY":-0.5}
+                 ,greedy_initial=False
+                 ,hori_model=None,
+                 vert_model=None
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -40,7 +43,9 @@ class Env:
         self.permutation_list=[]
         self.device=device
         self.reward_dict=reward_dict
-
+        self.greedy_initial=greedy_initial
+        if greedy_initial:
+            self.ga_solver=GeneticAlgorithm(hori_model,vert_model)
     
     def load_image(self,image_num,id=[]):
         if id:
@@ -228,11 +233,19 @@ class Env:
         
         for i in range(self.image_num):
             initial_permutation.pop(9*i+9//2-i)
-        self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
-                                for j in range(self.image_num)]
-        for i in range(swap_num):
-            action_index=random.randint(0,91)
-            self.permutation_list=self.permute(self.permutation_list,action_index)
+        if self.greedy_initial:
+            initial_permutation,greedy_score=self.ga_solver.ga_search(16,self.permutation2piece,init_solution=[initial_permutation])#Not modified for multi image
+            initial_permutation=list(initial_permutation)
+            self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
+                                    for j in range(self.image_num)]
+        else:
+            self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
+                                    for j in range(self.image_num)]
+            for i in range(swap_num):
+                action_index=random.randint(0,91)
+                self.permutation_list=self.permute(self.permutation_list,action_index)
+
+        
         print(f"Initial permutation {self.permutation_list}")
         
         

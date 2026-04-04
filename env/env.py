@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import itertools
+from agent.geneticAlgorithm import GeneticAlgorithm
 
 
 class Env:
@@ -23,6 +24,8 @@ class Env:
                  reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":.5,"DONE_REWARD":1000,"CONSISTENCY_REWARD":200,"PANELTY":-0.5}
                  ,terminate_action=45
                  ,greedy_initial=False
+                 ,hori_model=None,
+                 vert_model=None
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -43,6 +46,9 @@ class Env:
         self.device=device
         self.reward_dict=reward_dict
         self.terminate_action=terminate_action
+        self.greedy_initial=greedy_initial
+        if greedy_initial:
+            self.ga_solver=GeneticAlgorithm(hori_model,vert_model)
 
     
     def load_image(self,image_num,id=[]):
@@ -224,6 +230,11 @@ class Env:
         for i in range(swap_num):
             action_index=random.randint(0,len(initial_permutation)*(len(initial_permutation)-1)//2-1)
             initial_permutation=self.permute(initial_permutation,action_index)
+        if self.greedy_initial:
+            initial_permutation,greedy_score=self.ga_solver.ga_search(16,self.permutation2piece,init_solution=[initial_permutation])#Not modified for multi image
+            initial_permutation=list(initial_permutation)
+        
+        
         print(f"Initial permutation {initial_permutation}")
         self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
