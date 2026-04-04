@@ -1,7 +1,7 @@
-from global_env92 import Env
+from env.global_env92 import Env
 from model_code.local_switcher_model import Local_switcher_model
 from agent.local_switcher import Local_switcher
-from utils import save_log,read_log,plot_reward_curve
+from utils.utils import save_log,read_log,plot_reward_curve
 import numpy as np
 import torch
 import os

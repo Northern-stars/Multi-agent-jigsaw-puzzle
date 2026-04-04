@@ -1,7 +1,7 @@
 from env.env import Env
-from general_switcher import General_switcher
-from general_switcher_model import General_switcher_model
-from utils import save_log,plot_reward_curve
+from agent.general_switcher import General_switcher
+from model_code.general_switcher_model import General_switcher_model
+from utils.utils import save_log,plot_reward_curve
 import torch
 import numpy as np
 import random

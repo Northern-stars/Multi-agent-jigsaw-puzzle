@@ -7,7 +7,7 @@ from model_code.piece_compare import piece_compare_modulator as compare_model
 import random
 import numpy as np
 import os
-from utils import plot_confusion_matrix
+from utils.utils import plot_confusion_matrix
 
 LOAD=False
 MODEL_PATH=os.path.join("model","deepuzzle9_modulator.pth")

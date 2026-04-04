@@ -4,7 +4,7 @@ import os
 import random, time
 import numpy as np
 import multiprocessing
-from greedy import load_score_matrix,get_local_accuracy,get_score
+from evaluation.greedy import load_score_matrix,get_local_accuracy,get_score
 import copy
 
 MIN_MUTATION=0.2

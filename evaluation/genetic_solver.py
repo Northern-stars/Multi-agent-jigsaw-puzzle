@@ -4,7 +4,7 @@ import os
 import random, time
 import numpy as np
 import multiprocessing
-from greedy import get_score,load_score_matrix,get_local_accuracy
+from evaluation.greedy import get_score,load_score_matrix,get_local_accuracy
 import copy
 
 

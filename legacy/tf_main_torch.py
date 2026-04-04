@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 from torchvision import models
 from tqdm import tqdm
-from utils import plot_confusion_matrix
+from utils.utils import plot_confusion_matrix
 
 
 # ========= 数据准备 ==========
