@@ -1,9 +1,9 @@
 import torch
 import copy
-from local_switcher import Local_switcher
-from local_switcher_model import Local_switcher_model
+from agent.local_switcher import Local_switcher
+from model_code.local_switcher_model import Local_switcher_model
 import os
-from env import Env
+from env.env import Env
 from agent.buffer_switcher_sd2rl_64action import Buffer_switcher
 from model_code.buffer_switcher_model import Buffer_switcher_model
 import random

@@ -6,11 +6,11 @@ import copy
 import itertools
 # from outsider_pretrain import fen_model
 from torchvision.models import efficientnet_b0,efficientnet_b3
-from fen_model import fen_model as Fen_model
-from pretrain_1 import pretrain_model
+from model_code.fen_model import fen_model as Fen_model
+from pretrain.pretrain_1 import pretrain_model
 # from torch.utils.data import Dataset,DataLoader
 import cv2
-import Vit
+import model_code.Vit as Vit
 import os
 import time
 from matplotlib import pyplot as plt

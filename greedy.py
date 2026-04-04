@@ -10,10 +10,10 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-import Vit
+import model_code.Vit as Vit
 # from pretrain import pretrain_model
-from pretrain_1 import pretrain_model
-from piece_compare import DeepuzzleModel_pieceStyle as compare_model
+from pretrain.pretrain_1 import pretrain_model
+from model_code.piece_compare import DeepuzzleModel_pieceStyle as compare_model
 
 test_x_path = 'dataset/test_img_48gap_33.npy'
 test_y_path = 'dataset/test_label_48gap_33.npy'

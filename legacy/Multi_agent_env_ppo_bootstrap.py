@@ -8,7 +8,7 @@ import itertools
 from torchvision.models import efficientnet_b0,efficientnet_b3
 # from torch.utils.data import Dataset,DataLoader
 import cv2
-import Vit
+import model_code.Vit as Vit
 import os
 import time
 

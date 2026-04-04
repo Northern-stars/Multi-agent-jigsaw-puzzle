@@ -1,6 +1,6 @@
 import torch
 from model_code.buffer_switcher_model import Buffer_switcher_model
-from env import Env
+from env.env import Env
 import random
 import copy
 import torch.nn as nn

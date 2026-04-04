@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision.models import efficientnet_b3,efficientnet_b0
-from fen_model import Modulator
+from model_code.fen_model import Modulator
 import torch.nn.functional as F
 
 class piece_compare_model_b3(nn.Module):

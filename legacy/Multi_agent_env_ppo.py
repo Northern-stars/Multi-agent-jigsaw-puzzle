@@ -4,11 +4,11 @@ import numpy as np
 import random
 import copy
 import itertools
-from outsider_pretrain import fen_model
+from pretrain.outsider_pretrain import fen_model
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset,DataLoader
 import cv2
-import Vit
+import model_code.Vit as Vit
 import os
 import time
 

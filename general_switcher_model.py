@@ -1,8 +1,8 @@
 import torch.nn as nn
 import torch
-from fen_model import fen_model
+from model_code.fen_model import fen_model
 from torchvision.models import efficientnet_b0
-from pretrain_1 import pretrain_model
+from pretrain.pretrain_1 import pretrain_model
 class General_switcher_model(nn.Module):
     def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,out_size,dropout=0.1,model_name="ef"):
         super(General_switcher_model,self).__init__()

@@ -1,4 +1,4 @@
-from env import Env
+from env.env import Env
 from general_switcher import General_switcher
 from general_switcher_model import General_switcher_model
 from utils import save_log,plot_reward_curve
@@ -9,7 +9,7 @@ import os
 import torch.nn as nn
 import copy
 
-from pretrain_1 import pretrain_model
+from pretrain.pretrain_1 import pretrain_model
 
 
 MODEL_NAME="modulator"

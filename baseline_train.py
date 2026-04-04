@@ -1,13 +1,13 @@
 from global_env92 import Env
-from local_switcher_model import Local_switcher_model
-from local_switcher import Local_switcher
+from model_code.local_switcher_model import Local_switcher_model
+from agent.local_switcher import Local_switcher
 from utils import save_log,read_log,plot_reward_curve
 import numpy as np
 import torch
 import os
 import random
 
-from pretrain_1 import pretrain_model
+from pretrain.pretrain_1 import pretrain_model
 
 
 MODEL_NAME="modulator"

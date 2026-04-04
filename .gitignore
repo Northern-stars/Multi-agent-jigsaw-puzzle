@@ -6,3 +6,4 @@ model/
 result/
 *.tar
 .vscode/
+dataset/

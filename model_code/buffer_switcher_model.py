@@ -1,4 +1,4 @@
-from fen_model import central_fen_model
+from model_code.fen_model import central_fen_model
 import torch.nn as nn
 import torch
 
