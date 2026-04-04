@@ -10,9 +10,9 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-import Vit
-from fen_model import Modulator
-from piece_compare import DeepuzzleModel_pieceStyle
+import model_code.Vit as Vit
+from model_code.fen_model import Modulator
+from model_code.piece_compare import DeepuzzleModel_pieceStyle
 from tqdm import tqdm
 
 
@@ -33,11 +33,11 @@ train_y=np.load(train_y_path)
 test_x=np.load(test_x_path)
 test_y=np.load(test_y_path)
 
-MODEL="piece_style"
+MODEL="modulator"
 
 HORI_MODEL_NAME=f"model/hori_{MODEL}.pth"
 VERT_MODEL_NAME=f"model/vert_{MODEL}.pth"
-BATCH_SIZE=100
+BATCH_SIZE=150
 LOAD=False
 
 class imageData(Dataset):
@@ -131,7 +131,7 @@ class imageData(Dataset):
 train_data=imageData(train_x,train_y)
 train_dataloader=DataLoader(train_data,batch_size=BATCH_SIZE,shuffle=True,drop_last=True)
 test_data=imageData(test_x,test_y)
-test_dataloader=DataLoader(test_data,batch_size=1,shuffle=True)
+test_dataloader=DataLoader(test_data,batch_size=BATCH_SIZE,shuffle=True)
 
 # class fen_model(nn.Module):
 #     def __init__(self,hidden_size1,hidden_size2):
@@ -330,11 +330,11 @@ def test(hori_model,vert_model):
             vert_right += (vert_pred == vert_label).sum().item()
             
             # 每100个batch打印一次进度
-            if (batch_num + 1) % 100 == 0:
-                hori_acc = hori_right / total_samples
-                vert_acc = vert_right / total_samples
-                print(f"Batch {batch_num+1}/{len(test_dataloader)} - "
-                      f"Hori Acc: {hori_acc:.4f}, Vert Acc: {vert_acc:.4f}")
+            # if (batch_num + 1) % 100 == 0:
+            #     hori_acc = hori_right / total_samples
+            #     vert_acc = vert_right / total_samples
+            #     print(f"Batch {batch_num+1}/{len(test_dataloader)} - "
+            #           f"Hori Acc: {hori_acc:.4f}, Vert Acc: {vert_acc:.4f}")
         
         # 最终结果
         hori_accuracy = hori_right / total_samples

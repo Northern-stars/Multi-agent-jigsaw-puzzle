@@ -1,11 +1,11 @@
 import torch.nn as nn
-from fen_model import fen_model
+from model_code.fen_model import fen_model
 
 
 class Local_switcher_model(nn.Module):
-    def __init__(self,fen_model_hidden1,fen_model_hidden2,hidden1,hidden2,action_num,dropout=0.1):
+    def __init__(self,fen_model_hidden1,fen_model_hidden2,hidden1,hidden2,action_num,dropout=0.1,model_name="ef"):
         super().__init__()
-        self.fen_model=fen_model(fen_model_hidden1,fen_model_hidden2)
+        self.fen_model=fen_model(fen_model_hidden1,fen_model_hidden2,model_name=model_name)
         self.fc1=nn.Linear(fen_model_hidden2,hidden1)
         self.relu=nn.ReLU()
         self.bn1=nn.BatchNorm1d(hidden1)

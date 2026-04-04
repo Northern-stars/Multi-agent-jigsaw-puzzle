@@ -4,15 +4,22 @@ from torchvision.models import efficientnet_b0,efficientnet_b3,efficientnet_v2_m
 import torch.nn.functional as F
 
 class fen_model(nn.Module):
-    def __init__(self, hidden_size1, hidden_size2):
+    def __init__(self, hidden_size1, hidden_size2,feature_hidden=512,model_name="ef"):
         super(fen_model, self).__init__()
-        self.ef = efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier = nn.Linear(1536, 1024)
+        self.feature_hidden=feature_hidden
+        if model_name=="ef":
+            self.hori_ef = efficientnet_b3(weights="DEFAULT")
+            self.hori_ef.classifier = nn.Linear(1536, feature_hidden)
+            self.vert_ef = efficientnet_b3(weights="DEFAULT")
+            self.vert_ef.classifier = nn.Linear(1536, feature_hidden)
+        elif model_name=="modulator":
+            self.hori_ef=Modulator(transformer_dim=feature_hidden,out=feature_hidden)
+            self.vert_ef=Modulator(transformer_dim=feature_hidden,out=feature_hidden)
 
-        self.contrast_fc_hori = nn.Linear(2048, 1024)
-        self.contrast_fc_vert = nn.Linear(2048, 1024)
+        self.contrast_fc_hori = nn.Linear(feature_hidden*2, hidden_size1)
+        self.contrast_fc_vert = nn.Linear(feature_hidden*2, hidden_size1)
 
-        self.fc1 = nn.Linear(1024*12, hidden_size1)
+        self.fc1 = nn.Linear(hidden_size1*12, hidden_size1)
         self.relu = nn.ReLU()
         self.bn = nn.BatchNorm1d(hidden_size1)
         self.do = nn.Dropout1d(p=0.1)
@@ -32,16 +39,18 @@ class fen_model(nn.Module):
         patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
 
         # ---- 2. 一次性送进 ef ----
-        feats = self.ef(patches)   # (B*9, 1024)
-        feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
+        hori_feats = self.hori_ef(patches)   # (B*9, 1024)
+        hori_feats = hori_feats.view(B, 9, self.feature_hidden)  # (B, 9, 1024)
+        vert_feats = self.vert_ef(patches)   # (B*9, 1024)
+        vert_feats = vert_feats.view(B, 9, self.feature_hidden)  # (B, 9, 1024)
 
         # ---- 3. 构建横向对 ----
-        hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+        hori_pairs = torch.stack([torch.cat([hori_feats[:, i, :], hori_feats[:, j, :]], dim=-1) 
                                   for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
         hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
 
         # ---- 4. 构建纵向对 ----
-        vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+        vert_pairs = torch.stack([torch.cat([vert_feats[:, i, :], vert_feats[:, j, :]], dim=-1) 
                                   for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
         vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
 
@@ -239,12 +248,13 @@ class Modulator(nn.Module):
         )
 
         self.fen=efficientnet_b0(pretrained=True).features
+        self.reverse_conv=nn.ConvTranspose2d(1280,1280,5)
 
     def forward(self, x: torch.Tensor):
         x=self.fen(x)
-        
+        x=self.reverse_conv(x)
         bs, c, h, w = x.shape
-        print(f"Feature size: {bs,c,h,w}")
+        # print(f"Feature size: {bs,c,h,w}")
         x = self.mlp1(x) 
         x = x.permute(0, 2, 1).reshape(bs, -1, h, w)
 

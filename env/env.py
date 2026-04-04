@@ -21,6 +21,8 @@ class Env:
                  tau=0.01,
                  device="cuda" if torch.cuda.is_available() else "cpu",
                  reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":.5,"DONE_REWARD":1000,"CONSISTENCY_REWARD":200,"PANELTY":-0.5}
+                 ,terminate_action=45
+                 ,greedy_initial=False
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -40,6 +42,7 @@ class Env:
         self.permutation_list=[]
         self.device=device
         self.reward_dict=reward_dict
+        self.terminate_action=terminate_action
 
     
     def load_image(self,image_num,id=[]):
@@ -69,7 +72,7 @@ class Env:
             permutation_raw.insert(4,4)
             for j in range(9):
                 self.permutation2piece[permutation_raw[j]+9*i]=image_fragments[j]
-            self.permutation2piece[-1]=torch.zeros(3,96,96).to(self.device)
+            self.permutation2piece[-1]=torch.randint(low=0,high=255,size=(3,96,96),dtype=torch.float32).to(self.device)
         
     def get_image(self,permutation,image_index):
         image=torch.zeros(3,288,288).to(self.device)
@@ -122,6 +125,8 @@ class Env:
         for piece in permutation:
             if piece//self.piece_num==image_index:
                 score+=1
+            elif piece==-1:
+                score+=0.5
         if score==self.piece_num-1:
             return self.reward_dict["CONSISTENCY_REWARD"]
         return score*self.reward_dict["CONSISTENCY"]
@@ -193,7 +198,8 @@ class Env:
     def permute(self,cur_permutation,action_index):
         # print("Env permuting")
         new_permutation=copy.deepcopy(cur_permutation)
-        if action_index==(self.piece_num+1)*self.piece_num//2:
+        # if action_index==(self.piece_num+1)*self.piece_num//2:
+        if action_index==self.terminate_action:
             return new_permutation
         action=list(itertools.combinations(list(range(len(cur_permutation))), 2))[action_index]
         value0=cur_permutation[action[0]]

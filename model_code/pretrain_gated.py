@@ -10,7 +10,7 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-from gated_linear_sample import gated_linear
+from model_code.gated_linear_sample import gated_linear
 from tqdm import tqdm
 
 

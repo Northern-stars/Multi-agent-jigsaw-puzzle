@@ -4,7 +4,7 @@ import numpy as np
 import random
 import copy
 import itertools
-from outsider_pretrain import fen_model
+from pretrain.outsider_pretrain import fen_model
 
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"

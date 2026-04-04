@@ -4,16 +4,17 @@ import os
 import random, time
 import numpy as np
 import multiprocessing
-from greedy import get_score,load_score_matrix,get_local_accuracy
+from greedy import load_score_matrix,get_local_accuracy,get_score
 import copy
 
-
+MIN_MUTATION=0.2
+MUTATION_GAMMA=0.9
 
 class GeneticAlgorithm:
-    def __init__(self, hori_score_matrix,vert_score_matrix, num_population=64, crossover_rate=0.8, mutation_rate=0.2, variety_decay=0.8, max_iters=20):
+    def __init__(self, hori_score_matrix,vert_score_matrix, num_population=64, crossover_rate=0.8, mutation_rate=0.2, variety_decay=0.8, max_iters=20,decay=False):
         self.num_population = num_population
         self.crossover_rate = crossover_rate
-        self.mutation_rate = mutation_rate
+        self.init_mutation_rate = mutation_rate
         self.variety_decay = variety_decay
         self.max_iters = max_iters
         self.hori_score_matrix=hori_score_matrix
@@ -23,8 +24,12 @@ class GeneticAlgorithm:
 
     def evaluate(self, solution,img_id):#rw
         solution_=copy.deepcopy(solution)
-        solution_.insert(4,4)
-        score=get_score(img_id,solution_,self.hori_score_matrix,self.vert_score_matrix)
+        solution_1=solution_[0:len(solution_)//2]
+        solution_1.insert(4,4)
+        solution_2=solution_[len(solution_)//2:]
+        solution_2.insert(4,13)
+
+        score=get_score(img_id,solution_1,self.hori_score_matrix,self.vert_score_matrix)+get_score(img_id,solution_2,self.hori_score_matrix,self.vert_score_matrix)
         return score
 
     def crossover(self, chrom1, chrom2):
@@ -97,20 +102,23 @@ class GeneticAlgorithm:
     def ga_search(self, img_id,solution_size, init_solution=[]):
         solution_best = None
         score_best = 0
-
+        self.mutation_rate=self.init_mutation_rate
         # solution initialization
         population = np.zeros((self.num_population, solution_size), dtype='int')
         for i in range(self.num_population):
             if len(init_solution) == 0:
                 # temp_solution = [j for j in range(solution_size)]
-                temp_solution = [j if j<4 else j+1 for j in range(solution_size)]
-
+                temp_solution1 = [j if j<4 else j+1 for j in range(solution_size//2)]
+                temp_solution2=[j+9 if j<4 else j+10 for j in range(solution_size//2)]
+                temp_solution=temp_solution1+temp_solution2
                 random.shuffle(temp_solution)
                 population[i] = np.array(temp_solution)
             else:
                 if i % 10 == 0:
                     # temp_solution = [j for j in range(solution_size)]
-                    temp_solution = [j if j<4 else j+1 for j in range(solution_size)]
+                    temp_solution1 = [j if j<4 else j+1 for j in range(solution_size//2)]
+                    temp_solution2=[j+9 if j<4 else j+10 for j in range(solution_size//2)]
+                    temp_solution=temp_solution1+temp_solution2
                     random.shuffle(temp_solution)
                     population[i] = np.array(temp_solution)
                 else:
@@ -147,6 +155,8 @@ class GeneticAlgorithm:
                 if ranking[i] == self.num_population * 2 - 1 and population_scores[i] > score_best:
                     solution_best = population_new[i]
                     score_best = population_scores[i]
+            if self.mutation_rate>MIN_MUTATION:
+                self.mutation_rate*=MUTATION_GAMMA
         return solution_best, score_best
 
 
@@ -154,7 +164,9 @@ class GeneticAlgorithm:
 
 
 def test(ga_solver:GeneticAlgorithm):
-    true_result=list(range(0,9))
+    true_result=list(range(0,18))
+    true_result.pop(13)
+    true_result.pop(4)
     greedy_right_rate=[]
     right=[]
     hori_acc=[]
@@ -162,13 +174,12 @@ def test(ga_solver:GeneticAlgorithm):
     cate_acc=[]
     perm=[]
 
-
+    print(true_result)
 
     for img_idx in range(ga_solver.data_length):
-        print(f"\rSearching index: {img_idx}",end="")
-        best_perm,greedy_score=ga_solver.ga_search(img_idx,8)
+        print(f"\rSearching index: {img_idx}, current avg acc:{np.mean(right) if len(right)>0 else 0 :.4f}, greedy better rate: {np.mean(greedy_right_rate) if len(right)>0 else 0 :.4f}",end="")
+        best_perm,greedy_score=ga_solver.ga_search(img_idx,16)
         best_perm=list(best_perm)
-        best_perm.insert(4,4)
         perm.append(best_perm)
         
         
@@ -197,5 +208,8 @@ if __name__=="__main__":
     hori_score_matrix,vert_score_matrix=load_score_matrix()
     ga_solver=GeneticAlgorithm(hori_score_matrix,
                                vert_score_matrix,
-                               crossover_rate=0.9)
+                               crossover_rate=0.9,
+                               max_iters=60,
+                               num_population=256,
+                               mutation_rate=0.2)
     right,hori,vert,cate,right_record,perm=test(ga_solver)

@@ -4,18 +4,17 @@ import numpy as np
 import random
 import copy
 import itertools
-# from outsider_pretrain import fen_model
-from torchvision.models import efficientnet_b0,efficientnet_b3
-# from torch.utils.data import Dataset,DataLoader
+from torchvision.models import efficientnet_b0
+from torch.utils.data import Dataset,DataLoader
 import cv2
-import Vit
+import model_code.Vit as Vit
 import os
 import time
-from matplotlib import pyplot as plt
+from pretrain.pretrain import pretrain_model
 
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-DONE_REWARD=1000
-GAMMA=0.998
+DONE_REWARD=20
+GAMMA=0.9
 CLIP_GRAD_NORM=0.1
 TRAIN_PER_STEP=25
 ACTOR_LR=1e-4
@@ -33,26 +32,26 @@ SHOW_IMAGE=True
 
 PAIR_WISE_REWARD=.2
 CATE_REWARD=.8
-CONSISTENCY_REWARD=0
-CONSISTENCY_REWARD_WEIGHT=0.5
+CONSISTENCY_REWARD=50
+CONSISTENCY_REWARD_WEIGHT=.5
 PANELTY=-0.2
-ENTROPY_WEIGHT=0.05
+ENTROPY_WEIGHT=0.01
 ENTROPY_GAMMA=0.998
 ENTROPY_MIN=0.005
 
 EPOCH_NUM=2000
 LOAD_MODEL=False
-SWAP_NUM=[1,3,5,5]
+SWAP_NUM=[1,2,4,4]
 MAX_STEP=[400,300,300,200]
-MODEL_NAME="(3).pth"
-ACTOR_PATH=os.path.join("model/Actor"+MODEL_NAME)
+MODEL_NAME="(8).pth"
+ACTOR_PATH=os.path.join("model/DQN_classic"+MODEL_NAME)
 CRITIC_PATH=os.path.join("model/Critic"+MODEL_NAME)
 
-BATCH_SIZE=20
+BATCH_SIZE=15
 EPSILON=0.3
 EPSILON_GAMMA=0.995
 EPSILON_MIN=0.1
-AGENT_EPOCHS=5
+AGENT_EPOCHS=1
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -67,136 +66,307 @@ train_x=np.load(train_x_path)
 train_y=np.load(train_y_path)
 print(f"Data shape: x {train_x.shape}, y {train_y.shape}")
 
-class Fen_model(nn.Module):
-    def __init__(self, hidden_size1, hidden_size2):
-        super(Fen_model, self).__init__()
-        self.ef = efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier = nn.Linear(1536, 1024)
 
-        self.contrast_fc_hori = nn.Linear(2048, 1024)
-        self.contrast_fc_vert = nn.Linear(2048, 1024)
+def selective_load_state_dict(source_model, target_model, layer_mapping):
+    """
+    选择性加载state_dict
+    
+    参数:
+    - source_model: 源模型
+    - target_model: 目标模型  
+    - layer_mapping: 字典，{源层名: 目标层名}
+    """
+    source_state_dict = source_model.state_dict()
+    target_state_dict = target_model.state_dict()
+    
+    # 创建新的state_dict，只更新指定的层
+    new_state_dict = target_state_dict.copy()
+    
+    for src_layer, tgt_layer in layer_mapping.items():
+        src_weight_key = f"{src_layer}.weight"
+        src_bias_key = f"{src_layer}.bias"
+        
+        tgt_weight_key = f"{tgt_layer}.weight"
+        tgt_bias_key = f"{tgt_layer}.bias"
+        
+        # 复制权重
+        if src_weight_key in source_state_dict and tgt_weight_key in new_state_dict:
+            if source_state_dict[src_weight_key].shape == new_state_dict[tgt_weight_key].shape:
+                new_state_dict[tgt_weight_key] = source_state_dict[src_weight_key].clone()
+            else:
+                print(f"权重形状不匹配: {src_weight_key} -> {tgt_weight_key}")
+        
+        # 复制偏置
+        if src_bias_key in source_state_dict and tgt_bias_key in new_state_dict:
+            if source_state_dict[src_bias_key].shape == new_state_dict[tgt_bias_key].shape:
+                new_state_dict[tgt_bias_key] = source_state_dict[src_bias_key].clone()
+            else:
+                print(f"偏置形状不匹配: {src_bias_key} -> {tgt_bias_key}")
+    
+    # 加载更新后的state_dict
+    target_model.load_state_dict(new_state_dict, strict=False)
+    return target_model
 
-        self.fc1 = nn.Linear(1024*12, hidden_size1)
-        self.relu = nn.ReLU()
-        self.bn = nn.BatchNorm1d(hidden_size1)
-        self.do = nn.Dropout1d(p=0.1)
-        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
 
-        # 定义 index 对
-        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
-        self.vert_set = [(i, i+3) for i in range(6)]
+class fen_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2):
+        super(fen_model,self).__init__()
+        self.ef=efficientnet_b0(weights="DEFAULT")
+        self.ef.classifier=nn.Linear(1280,256)
+        self.contrast_fc_hori=nn.Linear(512,256)
+        self.contrast_fc_vert=nn.Linear(512,256)
+        self.fc1=nn.Linear(256*12,hidden_size1)
+        self.relu=nn.ReLU()
+        self.bn=nn.BatchNorm1d(hidden_size1)
+        self.do=nn.Dropout1d(p=0.1)
+        self.fc2=nn.Linear(hidden_size1,hidden_size2)
+        self.hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
+        self.vert_set=[(i,i+3) for i in range(3*2)]
+    
+    def forward(self,image):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
+        
+        image_tensor=[self.ef(image_fragments[i]) for i in range(len(image_fragments))]
 
-    def forward(self, image):
-        B, C, H, W = image.shape   
-
-        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
-
-        patches = patches.permute(0,2,3,1,4,5).contiguous()
-        patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
-
-        feats = self.ef(patches)   # (B*9, 1024)
-        feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
-
-        hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
-                                  for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
-        hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
-
-        vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
-                                  for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
-        vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
-
-        feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
-        feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
-
-        x = self.do(feature_tensor)
-        x = self.fc1(x)
-        x = self.do(x)
-        x = self.bn(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-
+        hori_tensor=torch.cat([self.contrast_fc_hori(torch.cat([image_tensor[self.hori_set[i][0]],image_tensor[self.hori_set[i][1]]],dim=-1)) for i in range(len(self.hori_set))],dim=-1)
+        vert_tensor=torch.cat([self.contrast_fc_vert(torch.cat([image_tensor[self.vert_set[i][0]],image_tensor[self.vert_set[i][1]]],dim=-1)) for i in range(len(self.vert_set))],dim=-1)
+        feature_tensor=torch.cat([hori_tensor,vert_tensor],dim=-1)
+        x=self.do(feature_tensor)
+        x=self.fc1(x)
+        x=self.do(x)
+        x=self.bn(x)
+        x=self.relu(x)
+        x=self.fc2(x)
         return x
 
 
-class Actor_model(nn.Module):
-    def __init__(self,fen_hidden1,fen_hidden2,hidden1,hidden2,action_num,dropout=0.1):
-        super(Actor_model,self).__init__()
-        self.fen_model=Fen_model(fen_hidden1,fen_hidden2)
-        self.fc1=nn.Linear(fen_hidden2,hidden1)
-        self.processing_block1=nn.Sequential(
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden1),
-            nn.Dropout(dropout)
-        )
-        self.fc2=nn.Linear(hidden1,hidden2)
-        self.processing_block2=nn.Sequential(
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden2),
-            nn.Dropout(dropout)
-        )
-        self.out_fc=nn.Linear(hidden2,action_num)
+
+
+class actor_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size,action_num):
+        super(actor_model,self).__init__()
+        self.image_fen_model=fen_model(hidden_size1,hidden_size1)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.image_fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Actor missing keys hori",load_result_hori.missing_keys)
+        # print("Actor unexpected keys hori",load_result_hori.unexpected_keys)
+        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
+        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
+        self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
+        self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+        self.relu=nn.ReLU()
+        self.dropout=nn.Dropout(p=0.1)
+        self.bn=nn.BatchNorm1d(hidden_size2)
+        self.fc2=nn.Linear(hidden_size2,action_num)
     
-    def forward(self,image):
-        feature_tensor=self.fen_model(image)
-        feature_tensor=self.fc1(feature_tensor)
-        feature_tensor=self.processing_block1(feature_tensor)
-        feature_tensor=self.fc2(feature_tensor)
-        feature_tensor=self.processing_block2(feature_tensor)
-        out=self.out_fc(feature_tensor)
-        out=nn.functional.softmax(out,dim=-1)
-        return out
-    
-class Critic_model(nn.Module):
-    def __init__(self,fen_hidden1,fen_hidden2,hidden1,hidden2,dropout=0.1):
-        super().__init__()
-        self.fen_model=Fen_model(fen_hidden1,fen_hidden2)
-        self.fc1=nn.Linear(fen_hidden2,hidden1)
-        self.processing_block1=nn.Sequential(
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden1),
-            nn.Dropout(dropout)
-        )
-        self.fc2=nn.Linear(hidden1,hidden2)
-        self.processing_block2=nn.Sequential(
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden2),
-            nn.Dropout(dropout)
-        )
-        self.out_fc=nn.Linear(hidden2,1)
-    
-    def forward(self,image):
-        feature_tensor=self.fen_model(image)
-        feature_tensor=self.fc1(feature_tensor)
-        feature_tensor=self.processing_block1(feature_tensor)
-        feature_tensor=self.fc2(feature_tensor)
-        feature_tensor=self.processing_block2(feature_tensor)
-        out=self.out_fc(feature_tensor)
+    def forward(self,image,outsider_piece):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
+        image_input=self.image_fen_model(image)
+        outsider_input=self.outsider_fen_model(outsider_piece)
+        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
+        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
+        outsider_tensor=self.outsider_fc(outsider_tensor)
+        feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
+        out=self.fc1(feature_tensor)
+        out=self.dropout(out)
+        out=self.bn(out)
+        out=self.relu(out)
+        out=self.fc2(out)
+        # out=nn.functional.softmax(out,dim=1)
         return out
 
+class critic_model(nn.Module):
+    def __init__(self,hidden_size1,hidden_size2,outsider_hidden_size):
+        super(critic_model,self).__init__()
+        self.fen_model=fen_model(hidden_size1=hidden_size1,hidden_size2=hidden_size1)
+        self.outsider_fen_model=efficientnet_b0(weights="DEFAULT")
+        self.outsider_fen_model.classifier=nn.Linear(1280,outsider_hidden_size)
+        self.outsider_contrast_fc=nn.Linear(2*outsider_hidden_size,outsider_hidden_size)
+        self.outsider_fc=nn.Linear(outsider_hidden_size*9,outsider_hidden_size)
+        # state_dict=torch.load("pairwise_pretrain.pth")
+        # state_dict_replace = {
+        # k: v 
+        # for k, v in state_dict.items() 
+        # if k.startswith("ef.")
+        # }
+        # load_result_hori=self.fen_model.load_state_dict(state_dict_replace,strict=False)
+        # print("Critic missing keys hori",load_result_hori.missing_keys)
+        # print("Critic unexpected keys hori",load_result_hori.unexpected_keys)
+        self.fc1=nn.Linear(hidden_size1+outsider_hidden_size,hidden_size2)
+        self.relu=nn.ReLU()
+        self.dropout=nn.Dropout(p=0.1)
+        self.bn=nn.BatchNorm1d(hidden_size2)
+        self.fc=nn.Linear(hidden_size2,1)
+    
+    def forward(self,image,outsider):
+        image_fragments=[
+            image[:,:,0:96,0:96],
+            image[:,:,0:96,96:192],
+            image[:,:,0:96,192:288],
+            image[:,:,96:192,0:96],
+            image[:,:,96:192,96:192],
+            image[:,:,96:192,192:288],
+            image[:,:,192:288,0:96],
+            image[:,:,192:288,96:192],
+            image[:,:,192:288,192:288]
+        ]
+        image_input=self.fen_model(image)
+        outsider_input=self.outsider_fen_model(outsider)
+        outsider_image_tensor=[self.outsider_fen_model(image_fragments[i]) for i in range(len(image_fragments)) ]
+        outsider_tensor=torch.cat([self.outsider_contrast_fc(torch.cat([outsider_input,outsider_image_tensor[i]],dim=-1)) for i in range(len(image_fragments))],dim=-1)
+        outsider_tensor=self.outsider_fc(outsider_tensor)
+        feature_tensor=torch.cat([image_input,outsider_tensor],dim=-1)
+        out=self.fc1(feature_tensor)
+        out=self.dropout(out)
+        out=self.bn(out)
+        out=self.relu(out)
+        out=self.fc(out)
+        return out
+
+# class actor_model(nn.Module):
+#     def __init__(self, 
+#                  picture_size,
+#                  outsider_size,
+#                  patch_size,
+#                  encoder_layer_num,
+#                  n_head,
+#                  transformer_output_size,
+#                  unet_hidden,
+#                  encoder_hidden,
+#                  output_channel,
+#                  actor_hidden,
+#                  action_num,
+#                  dropout=0.1):
+#         super().__init__()
+#         num_patches=(outsider_size[2]*outsider_size[3]//(patch_size**2)+picture_size[2]*picture_size[3]//(patch_size**2))
+#         self.local_fen=Vit.UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
+#         self.image_embedding=Vit.PictureEmbedding(picture_size=picture_size,patch_size=patch_size)
+#         self.outsider_embedding=Vit.PictureEmbedding(picture_size=outsider_size,patch_size=patch_size)
+#         self.positional_embedding=Vit.PositionalEmbedding(d_model=output_channel*(patch_size**2),num_patches=num_patches)
+#         self.encoder_layers=nn.ModuleList(
+#             [
+#                 Vit.EncoderLayer((patch_size**2)*picture_size[1],encoder_hidden,n_head)
+#                 for _ in range(encoder_layer_num)
+#             ]
+#         )
+#         self.transformer_fc=nn.Linear(output_channel*(patch_size**2),1)
+#         self.fc1=nn.Linear(num_patches,transformer_output_size)
+#         self.relu=nn.ReLU()
+#         self.dropout=nn.Dropout(dropout)
+#         self.fc2=nn.Linear(transformer_output_size,actor_hidden)
+#         self.output=nn.Linear(actor_hidden,action_num)
 
 
-def check_gradients(model, verbose=True, min_abs_grad=1e-10):
-    summary = {}
-    total_params = 0
-    no_grad_params = 0
+#     def forward(self,image,outsider_piece):
+#         image=self.local_fen(image)
+#         outsider_piece=self.local_fen(outsider_piece)
+#         image_tensor=self.image_embedding(image)
+#         outsider_tensor=self.outsider_embedding(outsider_piece)
+#         transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
+#         transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
+#         for layer in self.encoder_layers:
+#             transformer_feature_tensor=layer(transformer_feature_tensor)
+#         feature_tensor=self.transformer_fc(transformer_feature_tensor)
+#         feature_tensor=feature_tensor.squeeze()
+#         x=self.fc1(feature_tensor)
+#         x=self.relu(x)
+#         x=self.dropout(x)
+#         x=self.fc2(x)
+#         x=self.relu(x)
+#         x=self.dropout(x)
+#         x=self.output(x)
+#         output=nn.functional.softmax(x,dim=-1)
+#         return output
 
-    for name, param in model.named_parameters():
-        total_params += 1
-        if param.grad is None:
-            summary[name] = "No grad (None)"
-            no_grad_params += 1
-        elif torch.all(torch.abs(param.grad) < min_abs_grad):
-            summary[name] = "Near-zero grad"
-            no_grad_params += 1
-        else:
-            summary[name] = "OK"
 
-    if verbose:
-        print(f"\n[Gradient Check] {no_grad_params}/{total_params} params have no/near-zero gradients.")
-        for name, status in summary.items():
-            print(f"{name:50s} : {status}")
+# class critic_model(nn.Module):
+#     def __init__(self,
+#                  picture_size,
+#                  outsider_size,
+#                  patch_size,
+#                  encoder_layer_num,
+#                  n_head,
+#                  transformer_out_size,
+#                  output_channel,
+#                  unet_hidden,
+#                  encoder_hidden,
+#                  critic_hidden,
+#                  dropout=0.1):
+#         super().__init__()
+#         # self.local_fen=Vit.VisionTransformer(
+#         #     picture_size=picture_size,
+#         #     patch_size=patch_size,
+#         #     encoder_layer_num=encoder_layer_num,
+#         #     n_head=n_head,
+#         #     out_size=transformer_out_size,
+#         #     output_channel=output_channel,
+#         #     unet_hidden=unet_hidden,
+#         #     encoder_hidden=encoder_hidden,
+#         #     dropout=dropout
+#         # )
+#         num_patches=(outsider_size[2]*outsider_size[3]//(patch_size**2)+picture_size[2]*picture_size[3]//(patch_size**2))
+#         self.local_fen=Vit.UNet(input_channel=picture_size[1],output_channel=output_channel,hidden=unet_hidden)
+#         self.image_embedding=Vit.PictureEmbedding(picture_size=picture_size,patch_size=patch_size)
+#         self.outsider_embedding=Vit.PictureEmbedding(picture_size=outsider_size,patch_size=patch_size)
+#         self.positional_embedding=Vit.PositionalEmbedding(d_model=output_channel*(patch_size**2),num_patches=num_patches)
+#         self.encoder_layers=nn.ModuleList(
+#             [
+#                 Vit.EncoderLayer((patch_size**2)*picture_size[1],encoder_hidden,n_head)
+#                 for _ in range(encoder_layer_num)
+#             ]
+#         )
+#         self.transformer_fc=nn.Linear(output_channel*(patch_size**2),1)
+#         self.fc=nn.Linear(num_patches,transformer_out_size)
+#         # self.local_fen.local_fen=nn.Identity()
+#         self.fc1=nn.Linear(transformer_out_size,critic_hidden)
+#         self.relu=nn.ReLU()
+#         self.dropout=nn.Dropout(dropout)
+#         self.fc2=nn.Linear(critic_hidden,1)
+#     def forward(self,image,outsider_piece):
+#         # transformer_output=self.local_fen(image)
+#         # image=self.local_fen(image)
+#         # outsider_piece=self.local_fen(outsider_piece)
+#         image_tensor=self.image_embedding(image)
+#         outsider_tensor=self.outsider_embedding(outsider_piece)
+#         transformer_feature_tensor=torch.cat([image_tensor,outsider_tensor],dim=1)
+#         transformer_feature_tensor=self.positional_embedding(transformer_feature_tensor)
+#         for layer in self.encoder_layers:
+#             transformer_feature_tensor=layer(transformer_feature_tensor)
+#         feature_tensor=self.transformer_fc(transformer_feature_tensor)
+#         feature_tensor=feature_tensor.squeeze()
+#         transformer_output=self.fc(feature_tensor)
+#         x=self.fc1(transformer_output)
+#         x=self.relu(x)
+#         x=self.dropout(x)
+#         out=self.fc2(x)
+#         return out
 
-    return summary
 
 
 
@@ -209,7 +379,6 @@ class env:
                  gamma,
                  device,
                  actor_model,#input: image,outsider_piece. Output: action index
-                 critic_model,#input: image,outsider_piece. Output: Q value
                 #  encoder,
                  image_num,
                  buffer_size,
@@ -218,8 +387,7 @@ class env:
                  epsilon_gamma,
                  piece_num=9,
                  epochs=10,
-                 tau=0.01,
-                 lmb=0.95
+                 tau=0.01
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]
@@ -231,25 +399,21 @@ class env:
         self.memory_counter=0
         self.trace_start_point=0
         self.actor_model=actor_model
-        self.critic_model=critic_model
-        # self.main_critic_model=copy.deepcopy(self.critic_model)
-        self.actor_optimizer=torch.optim.AdamW(self.actor_model.parameters(),lr=ACTOR_LR)
+        self.main_model=copy.deepcopy(self.actor_model)
+        self.actor_optimizer=torch.optim.Adam(self.main_model.parameters(),lr=ACTOR_LR)
         self.actor_schedular=torch.optim.lr_scheduler.StepLR(self.actor_optimizer, step_size=ACTOR_SCHEDULAR_STEP, gamma=0.1)
-        self.critic_optimizer=torch.optim.AdamW(self.critic_model.parameters(),lr=CRITIC_LR)
-        self.critic_schedular=torch.optim.lr_scheduler.StepLR(optimizer=self.critic_optimizer,gamma=0.1,step_size=CRITIC_SCHEDULAR_STEP)
         self.device=device
         self.batch_size=batch_size
         self.gamma=gamma
         self.image_num=image_num
         self.buffer_size=buffer_size
-        self.action_list=[[0 for _ in range((piece_num+buffer_size)*piece_num//2+1)] for __ in range(image_num)]
+        self.action_list=[[0 for _ in range((piece_num+buffer_size-1)*(piece_num-1)//2)] for __ in range(image_num)]
         self.piece_num=piece_num
         self.entropy_weight=entropy_weight
         self.epsilon=epsilon
         self.epsilon_gamma=epsilon_gamma
         self.epochs=epochs
         self.tau=tau
-        self.lmb=lmb
 
     
     def load_image(self,image_num,id=[]):
@@ -297,9 +461,8 @@ class env:
         for i in range(9):
             image[:,(0+i//3)*96:(1+i//3)*96,(0+i%3)*96:(1+i%3)*96]=self.permutation2piece[final_permutation[i]]
     
-        # outsider_piece=self.permutation2piece[permutation[-1]]
-        # return image.unsqueeze(0).to(self.device),outsider_piece.unsqueeze(0).to(self.device)
-        return image.unsqueeze(0).to(self.device)
+        outsider_piece=self.permutation2piece[permutation[-1]]
+        return image.unsqueeze(0).to(self.device),outsider_piece.unsqueeze(0).to(self.device)
 
     def get_reward(self,permutation_list):
 
@@ -339,9 +502,9 @@ class env:
             
             # if -1 in permutation_copy[i]:
             #     consistency_reward_list[j]+=0.5*CONSISTENCY_REWARD
-            consistency_reward_list[i]=max_piece*CONSISTENCY_REWARD_WEIGHT
+            consistency_reward_list[j]=max_piece*CONSISTENCY_REWARD_WEIGHT
             if max_piece==piece_num:
-                consistency_reward_list[i]=CONSISTENCY_REWARD
+                consistency_reward_list[j]=CONSISTENCY_REWARD
 
             local_reward_list[i]+=PANELTY
             consistency_reward_list[i]+=PANELTY
@@ -349,7 +512,9 @@ class env:
             if permutation_copy[i]==list(range(start_index,start_index+piece_num)):
                 done_list[i]=True
                 local_reward_list[i]=DONE_REWARD
-        return [local_reward_list[i]+consistency_reward_list[i] for i in range (self.image_num)],done_list
+        
+        reward_list=[local_reward_list[j]+consistency_reward_list[j] for j in range(self.image_num)]
+        return reward_list,done_list
     
 
     def clean_memory(self):
@@ -359,7 +524,7 @@ class env:
     def show_image(self,image_permutation_list):
         for i in range(self.image_num):
 
-            image=self.get_image(permutation=image_permutation_list[i],image_index=i)
+            image,_=self.get_image(permutation=image_permutation_list[i],image_index=i)
             image=image.squeeze().to("cpu")
             image=image.permute([1,2,0]).numpy().astype(np.uint8)
             cv2.imshow(f"Final image {i}",image)
@@ -380,6 +545,7 @@ class env:
         new_permutation=copy.deepcopy(cur_permutation)
         if action_index==(self.piece_num+1)*self.piece_num//2:
             return new_permutation
+        # print(f"Action index {action_index}, Len: {len(self.action_list[0])}")
         action=list(itertools.combinations(list(range(len(cur_permutation))), 2))[action_index]
         value0=cur_permutation[action[0]]
         value1=cur_permutation[action[1]]
@@ -415,56 +581,11 @@ class env:
 
         
     def update(self,show=False):
-        eps=0.2
-        gae=[0 for _ in range(self.image_num)]
-        R_start=[True for _ in range(self.image_num)]
-        # R_track=[[] for _ in range(self.image_num)]
-        self.critic_model.eval()
-        i=(self.memory_counter-1)%len(self.mkv_memory)
-        while i!=(self.trace_start_point-1)%len(self.mkv_memory) or all(R_start):
-            image_index=self.mkv_memory[i]["Image_index"]
-            done=self.mkv_memory[i]["Done"]
-            reward=self.mkv_memory[i]["Reward"]
-            if R_start[image_index]:
-                R_start[image_index]=False
-
-            current_image=self.get_image(self.mkv_memory[i]["State"],image_index=image_index)
-            next_image=self.get_image(self.mkv_memory[i]["Next_state"],image_index=image_index)
-            with torch.no_grad():
-                cur_value=self.critic_model(current_image).item()
-                next_value=self.critic_model(next_image).item()
-            
-            delta=reward+self.gamma*next_value*(1-done)-cur_value
-            gae[image_index]=delta+self.gamma*self.lmb*(1-done)*gae[image_index]
-
-            self.mkv_memory[i]["Advantage"]=gae[image_index]
-        
-        
-            
-            
-            # R_track[image_index].append(R[image_index])
-
-            i=(i-1)%len(self.mkv_memory)
-        # i=(self.memory_counter-1)%len(self.mkv_memory)
-        for i in range(len(self.mkv_memory)):
-            if not "Advantage" in self.mkv_memory[i]:
-                print("Empty advantage: ",i)
-                self.clean_memory()
-                return
-
-        # R_track=[np.mean(R_track[j]) if R_track[j]!=[] else 1 for j in range(len(R_track)) ]
-
-
-        # while i!=(self.trace_start_point-1)%self.mkv_memory_size:
-        #     self.mkv_memory[i]["Return"]=self.mkv_memory[i]["Return"]/R_track[self.mkv_memory[i]["Image_index"]]
-        #     i=(i-1)%self.mkv_memory_size
-
 
         order=list(range(len(self.mkv_memory)))
         random.shuffle(order)
+        self.main_model.train()
         self.actor_model.train()
-        self.critic_model.train()
-        critic_loss_sum=0
         actor_loss_sum=0
         for i in range(self.epochs):
             if i*self.batch_size>=len(order):
@@ -475,112 +596,96 @@ class env:
                 sample_dicts=[self.mkv_memory[j] for j in order[i*self.batch_size:(i+1)*self.batch_size]]
             
             states=[]
-            
-            advantage=[]
+            outsider_pieces=[]
+
             actions=[]
             next_states=[]
-            
+            next_outsiders=[]
             reward=[]
             done=[]
-            old_log_probs=[]
+
             
             for a in range(len(sample_dicts)):
                 self.load_image(image_num=self.image_num,id=sample_dicts[a]["Image_id"])
 
-                current_image=self.get_image(sample_dicts[a]["State"],image_index=sample_dicts[a]["Image_index"])
+                current_image,current_outsider=self.get_image(sample_dicts[a]["State"],image_index=sample_dicts[a]["Image_index"])
                 states.append(current_image)
-                
-                
-                old_log_probs.append(sample_dicts[a]["Log_prob"])
+                outsider_pieces.append(current_outsider)
 
                 actions.append(sample_dicts[a]["Action"])
-                next_image=self.get_image(sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
+                next_image,next_outsider_piece=self.get_image(sample_dicts[a]["Next_state"],image_index=sample_dicts[a]["Image_index"])
                 next_states.append(next_image)
-                
+                next_outsiders.append(next_outsider_piece)
                 
                 reward.append(sample_dicts[a]["Reward"])
                 done.append(sample_dicts[a]["Done"])
-                advantage.append(sample_dicts[a]["Advantage"])
+
+
+                    
             
             state_tensor=torch.cat(states,dim=0)
             if state_tensor.size(0)==1:
-                self.critic_model.eval()
+
                 self.actor_model.eval()
-                # self.main_critic_model.eval()
+                self.main_model.eval()
             else:
-                self.critic_model.train()
+
                 self.actor_model.train()
-                # self.main_critic_model.train()
-            
+                self.main_model.train()
+
+            outsider_tensor=torch.cat(outsider_pieces,dim=0)
 
             next_state_tensor=torch.cat(next_states,dim=0)
-            
-
-            probs=self.actor_model(state_tensor)
+            next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
             
             action_tensor=torch.tensor(actions).to(self.device).unsqueeze(-1)
-            selected_probs=probs.gather(1,action_tensor).clamp(min=1e-8)
-            log_probs=torch.log(selected_probs)
-            old_log_probs=torch.cat(old_log_probs,dim=0)
+
             reward=torch.tensor(reward,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            advantage=torch.tensor(advantage,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1)
-            entropy = torch.distributions.Categorical(probs).entropy()
+            done=torch.tensor(done,dtype=torch.float32).to(self.device).unsqueeze(-1) 
 
-            ratio=torch.exp(log_probs-old_log_probs)
-            actor_loss=-torch.min(ratio*advantage,torch.clamp(ratio,1-eps,1+eps)*advantage).mean()-entropy.mean()*self.entropy_weight
-
-            actor_loss_sum-=actor_loss.item()
-
+            q_main=self.main_model(state_tensor,outsider_tensor).gather(1,action_tensor)
+            
+            with torch.no_grad():
+                q_next=self.actor_model(next_state_tensor,next_outsiders_tensor).max(1)[0].unsqueeze(-1)
+                q_target=reward+self.gamma*q_next*(1-done)
+            
+            loss=nn.MSELoss()(q_main,q_target)
             self.actor_optimizer.zero_grad()
-            
-            actor_loss.backward()
-
-            # check_gradients(model=self.actor_model, verbose=show)
+            loss.backward()
 
 
             
+
+
 
             torch.nn.utils.clip_grad_norm_(self.actor_model.parameters(), CLIP_GRAD_NORM)
             self.actor_optimizer.step()
 
-            for _ in range(CRITIC_UPDATE_TIME):
-                # critic_loss=nn.functional.mse_loss(pred_ret,(reward+self.gamma*pred_next_ret*(1-done)))
-                pred_ret=self.critic_model(state_tensor)
-                bellman_ret=self.gamma*(1-done)*self.critic_model(next_state_tensor)+reward
-                critic_loss=nn.functional.mse_loss(pred_ret,bellman_ret)
-                critic_loss_sum+=critic_loss.item()
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                # check_gradients(self.critic_model,verbose=show)
-                self.critic_optimizer.step()
 
-            
+
+            for target_param, main_param in zip(self.actor_model.parameters(),self.main_model.parameters()):
+                target_param.data.copy_(self.tau*main_param.data+(1-self.tau)*target_param.data)
 
 
             
 
             
-        if show: print(f"Critic loss: {critic_loss_sum*self.batch_size/len(self.mkv_memory)}. Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
-        if self.entropy_weight>=ENTROPY_MIN:
-            self.entropy_weight*=ENTROPY_GAMMA
-        
-        if self.critic_optimizer.state_dict()["param_groups"][0]["lr"]>CRITIC_LR_MIN:
-            self.critic_schedular.step()
+        if show: print(f"Actor_loss: {actor_loss_sum*self.batch_size/len(self.mkv_memory)}")
         
         if self.actor_optimizer.state_dict()["param_groups"][0]["lr"]>ACTOR_LR_MIN:
             self.actor_schedular.step()
+
 
 
     def step(self, epoch=500, load=True):
 
         
         if load:
-            self.critic_model.load_state_dict(torch.load(CRITIC_PATH))
-            self.actor_model.load_state_dict(torch.load(ACTOR_PATH))
-            self.main_critic_model=copy.deepcopy(self.critic_model)
 
-        reward_record=[]
+            self.actor_model.load_state_dict(torch.load(ACTOR_PATH))
+            self.main_model=copy.deepcopy(self.actor_model)
+
+        
         for i in range(epoch):
             self.clean_memory()
             if i > 300:
@@ -594,7 +699,7 @@ class env:
 
             
             initial_perm   = self.summon_permutation_list(swap_num=swap_num)
-            permutation_list = [initial_perm[j*self.piece_num:(j+1)*self.piece_num]
+            permutation_list = [initial_perm[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
             buffer               = [-1] * self.buffer_size
             done_list            = [False] * self.image_num
@@ -603,12 +708,12 @@ class env:
 
             pending_transitions={j: None for j in range(self.image_num)}
 
-            self.action_list=[[0 for _ in range((self.piece_num+self.buffer_size)*self.piece_num//2+1)] for __ in range(self.image_num)]
+            self.action_list=[[0 for _ in range((self.piece_num+self.buffer_size-1)*(self.piece_num-1)//2)] for __ in range(self.image_num)]
             self.trace_start_point=self.memory_counter
             last_action=[-1 for _ in range(self.image_num)]
 
 
-            step = 0; done = False ; train_flag=False
+            step = 0; done = False ; train_flag=True
             while not done and step < max_step:
                 state_list=[]
                 do_list = []
@@ -625,18 +730,17 @@ class env:
                             termination_list[j]=0
                             train_flag=True
                         
-                        # perm_with_buf = permutation_list[j] + buffer
-                        perm_with_buf=permutation_list[j]
+                        perm_with_buf = permutation_list[j] + buffer
                         state_list.append(copy.deepcopy(perm_with_buf))
-                        image = self.get_image(perm_with_buf,image_index=j)
+                        image, outsider = self.get_image(perm_with_buf,image_index=j)
 
-                        probs = self.actor_model(image)
-                        dist  = torch.distributions.Categorical(probs)
+                        q_value = self.actor_model(image, outsider)
+                        
                         
 
-                        action = dist.sample()
+                        action = self.epsilon_greedy(torch.argmax(q_value,dim=-1).item())
 
-                        action_log_prob=dist.log_prob(action).detach()
+                        action_log_prob=0
 
                         if pending_transitions[j] is not None:
                             prev_state,prev_action,prev_log_prob,prev_reward=pending_transitions[j]
@@ -647,22 +751,22 @@ class env:
                                                   log_prob=prev_log_prob,
                                                   reward= prev_reward,
                                                   next_state= perm_with_buf,
-                                                  done=1 if done_list[j] else 0)
+                                                  done=done_list[j])
                         
                         do_list.append(j)
 
 
 
-                        if last_action[j]==int(action.item()):
+                        if last_action[j]==int(action):
                             termination_list[j]+=1
                         else:
                             termination_list[j]=0
-                            last_action[j]=int(action.item())
+                            last_action[j]=int(action)
 
 
                         
                         # action=self.epsilon_greedy(action=action.item())
-                        action=action.item()
+                        action=action
                         model_action.append(action)
                         self.action_list[j][action]+=1
                         
@@ -687,25 +791,23 @@ class env:
                     reward_sum_list[j].append(reward_list[j])
 
                     prev_state,prev_action,prev_log_prob,_=pending_transitions[j]
-                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j])
+                    pending_transitions[j]=(prev_state,prev_action,prev_log_prob,reward_list[j]-last_reward_list[j])
                 
                 done = all(done_list)
-                
+                step += 1
 
-                if step!=0 and step%TRAIN_PER_STEP==0 and len(self.mkv_memory)>0:
+                if step%TRAIN_PER_STEP==0 and len(self.mkv_memory)>0:
                     train_flag=False
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
-                    # self.clean_memory()
-                    self.trace_start_point=self.memory_counter
+                    self.clean_memory()
                 elif train_flag and len(self.mkv_memory)>0:
                     train_flag=False
-                    self.epsilon/=(EPSILON_GAMMA)
+                    self.epsilon/=(EPSILON_GAMMA**5)
                     self.update()
                     self.load_image(image_num=self.image_num,id=self.image_id)
-                    # self.clean_memory()
-                    self.trace_start_point=self.memory_counter
-                step += 1
+                    self.clean_memory
+
 
             
             for j in range(self.image_num):
@@ -718,35 +820,24 @@ class env:
                                                   log_prob=prev_log_prob,
                                                   reward= prev_reward,
                                                   next_state= perm_with_buf,
-                                                  done=1 if done_list[j] else 0)
+                                                  done=done_list[j])
 
             print(f"Epoch: {i}, step: {step}, reward: {[sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ]}")
             print(f"Action_list: {self.action_list}")
             print(f"Permutation list: {permutation_list}")
-            reward_record.append([sum(reward_sum_list[j])/len(reward_sum_list[j]) for j in range(len(reward_sum_list)) if len(reward_sum_list[j])!=0 ])
             for j in range(self.image_num):
                 if termination_list[j]>=20:
-                    self.epsilon/=(EPSILON_GAMMA)
+                    self.epsilon/=(EPSILON_GAMMA**5)
             if len(self.mkv_memory)>0:
                 self.update(show=True)
             if self.epsilon>EPSILON_MIN:
                 self.epsilon*=EPSILON_GAMMA
             torch.save(self.actor_model.state_dict(),ACTOR_PATH)
-            torch.save(self.critic_model.state_dict(), CRITIC_PATH)
-        
 
-        self.plot_reward_curve(reward_record)
+
             
                 
-    def plot_reward_curve(self,reward_record):
-        avg_reward=[]
-        for i in range(len(reward_record)):
-            avg_reward.append(sum(reward_record[i])/len(reward_record[i]))
-        plt.plot(range(len(avg_reward)),avg_reward)
-        plt.xlabel("Episode")
-        plt.ylabel("Average Reward")
-        plt.title("Reward Curve")
-        plt.show()
+
             
 
 
@@ -757,8 +848,13 @@ class env:
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)
     
-    critic_model=Critic_model(fen_hidden1=2048,fen_hidden2=1024,hidden1=1024,hidden2=512).to(DEVICE)
-    actor_model=Actor_model(fen_hidden1=2048,fen_hidden2=1024,hidden1=1024,hidden2=512,action_num=28).to(DEVICE)
+    # critic=critic_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256).to(device=DEVICE)
+    actor=actor_model(hidden_size1=2048,hidden_size2=1024,outsider_hidden_size=256,action_num=36).to(DEVICE)
+    pretrain_model_dict=pretrain_model(256,256)
+    pretrain_model_dict.load_state_dict(torch.load("model/pairwise_pretrain.pth"))
+    selective_load_state_dict(pretrain_model_dict,actor,{"ef":"fen_model.ef"})
+    selective_load_state_dict(pretrain_model_dict,actor,{"contrast_fc_hori":"fen_model.contrast_fc_hori"})
+    selective_load_state_dict(pretrain_model_dict,actor,{"contrast_fc_vert":"fen_model.contrast_fc_vert"})
     # critic=critic_model(picture_size=[1,3,288,288],
     #                     outsider_size=[1,3,96,96],
     #                     patch_size=16,
@@ -784,23 +880,18 @@ if __name__ == "__main__":
     # feature_encoder=fen_model(512,512).to(device=DEVICE)
     environment=env(train_x=train_x,
                     train_y=train_y,
-                    memory_size=2000,
+                    memory_size=1000,
                     batch_size=BATCH_SIZE,
                     gamma=GAMMA,
                     device=DEVICE,
-                    actor_model=actor_model,
-                    critic_model=critic_model,
+                    actor_model=actor,
                     # encoder=feature_encoder,
                     image_num=1,
-                    buffer_size=0,
+                    buffer_size=1,
                     epsilon=EPSILON,
                     epsilon_gamma=EPSILON_GAMMA,
                    entropy_weight=ENTROPY_WEIGHT)
     environment.step(epoch=EPOCH_NUM,load=LOAD_MODEL)
-    # environment.load_image(1,[100])
-    # environment.recording_memory(100,0,[1,0,2,3,5,6,7,8],1,200,[0,1,2,3,5,6,7,8],0.5,1)
-    # environment.update(show=True)
-
     # environment.load_image(1,id=[1000])
     # environment.show_image([[0,1,2,3,4,5,6,7,8]])
     # reward_list,done_list=environment.get_reward([[0,1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15,16,17]])

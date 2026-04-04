@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset,DataLoader
 from tqdm import tqdm
-from piece_compare import piece_compare_modulator as compare_model
+from model_code.piece_compare import piece_compare_modulator as compare_model
 # from deepuzzle_pretrain_modified import DeepuzzleModel as compare_model
 import random
 import numpy as np

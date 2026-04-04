@@ -20,7 +20,7 @@ class Env:
                  epochs=10,
                  tau=0.01,
                  device="cuda" if torch.cuda.is_available() else "cpu",
-                 reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":0,"DONE_REWARD":1000,"CONSISTENCY_REWARD":0,"PANELTY":-0.5}
+                 reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":0.5,"DONE_REWARD":1000,"CONSISTENCY_REWARD":100,"PANELTY":-0.5}
                  ):
         self.image=train_x
         self.sample_number=train_x.shape[0]

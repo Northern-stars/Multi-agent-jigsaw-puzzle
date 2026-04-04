@@ -10,10 +10,10 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-import Vit
+import model_code.Vit as Vit
 # from pretrain import pretrain_model
-from pretrain_1 import pretrain_model
-from piece_compare import DeepuzzleModel_pieceStyle as compare_model
+from pretrain.pretrain_1 import pretrain_model
+from model_code.piece_compare import DeepuzzleModel_pieceStyle as compare_model
 import cv2
 
 from greedy import load_cate_matrix, greedy_test, score_check

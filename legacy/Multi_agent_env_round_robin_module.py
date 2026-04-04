@@ -4,8 +4,8 @@ from local_switcher import Local_switcher
 from local_switcher_model import Local_switcher_model
 import os
 from env import Env
-from buffer_switcher_sd2rl_64action import Buffer_switcher
-from buffer_switcher_model import Buffer_switcher_model
+from agent.buffer_switcher_sd2rl_64action import Buffer_switcher
+from model_code.buffer_switcher_model import Buffer_switcher_model
 import random
 import numpy as np
 

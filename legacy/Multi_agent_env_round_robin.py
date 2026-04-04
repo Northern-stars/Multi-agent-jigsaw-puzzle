@@ -7,9 +7,9 @@ import itertools
 # from outsider_pretrain import fen_model
 from torchvision.models import efficientnet_b0,efficientnet_b3
 from torch.utils.data import Dataset,DataLoader
-from pretrain import pretrain_model
+from pretrain.pretrain import pretrain_model
 import cv2
-import Vit
+import model_code.Vit as Vit
 import os
 import time
 

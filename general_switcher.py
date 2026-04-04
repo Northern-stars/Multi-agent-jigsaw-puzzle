@@ -1,4 +1,4 @@
-from env import Env
+from env.env import Env
 import torch
 import random
 import copy
@@ -6,14 +6,13 @@ import itertools
 import torch.nn as nn
 import numpy as np
 
-
 ACTOR_LR=1e-4
 ACTOR_LR_MIN=1e-6
 CLIP_GRAD_NORM=0.1
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 ACTOR_SCHEDULAR_STEP=200
 
-class Local_switcher:
+class General_switcher:
     def __init__(self,
                  model,
                  memory_size,
@@ -24,7 +23,6 @@ class Local_switcher:
                  tau=1e-3,
                  recommand=True,
                  recommand_num=10):
-        
         self.model=model
         self.main_model=copy.deepcopy(self.model)
         self.optimizer=torch.optim.Adam(self.main_model.parameters(),lr=ACTOR_LR,eps=1e-8)
@@ -41,10 +39,9 @@ class Local_switcher:
         
         self.action_num=action_num
 
-
         self.recommand=recommand
         self.recommand_num=recommand_num
-    
+
     def epsilon_greedy(self,action):
         prob=random.random()
         if prob>self.env.epsilon:
@@ -99,21 +96,21 @@ class Local_switcher:
 
         for i in action_list:
             perm_=self.permute(permutation,i)
-            image,_=self.env.get_image(perm_,image_index=image_index)
+            image,outsider=self.env.get_image(perm_,image_index=image_index)
             image_list.append(copy.deepcopy(image.cpu()))
-            # outsider_list.append(copy.deepcopy(outsider.cpu()))
+            outsider_list.append(copy.deepcopy(outsider.cpu()))
         
         i=0
         with torch.no_grad():
             while i < len(image_list):
                 if len(image_list)-i<self.batch_size:
                     image=torch.cat(image_list[i:],dim=0).to(DEVICE)
-                    # outsider=torch.cat(outsider_list[i:],dim=0).to(DEVICE)
+                    outsider=torch.cat(outsider_list[i:],dim=0).to(DEVICE)
                 else:
                     image=torch.cat(image_list[i:i+self.batch_size],dim=0).to(DEVICE)
-                    # outsider=torch.cat(outsider_list[i:i+BATCH_SIZE],dim=0).to(DEVICE)
+                    outsider=torch.cat(outsider_list[i:i+self.batch_size],dim=0).to(DEVICE)
 
-                value=self.model(image)
+                value=self.model(image,outsider)
                 value_list.append(value.squeeze(-1).to("cpu"))
                 i+=self.batch_size
             
@@ -126,7 +123,7 @@ class Local_switcher:
         score_list=np.zeros(self.action_num)
         for i in range(self.action_num):
             permutation_copy=self.permute(permutation,i)
-            score_list[i]=self.env.get_local_score(permutation_copy,image_index)
+            score_list[i]=self.env.get_local_score(permutation_copy,image_index)+self.env.get_consistency_reward(permutation_copy,image_index)
         best_action=(np.argsort(score_list)[::-1]).tolist()
         return best_action[:self.recommand_num]
 
@@ -181,9 +178,9 @@ class Local_switcher:
             next_state_tensor=torch.cat(next_states,dim=0)
             next_outsiders_tensor=torch.cat(next_outsiders,dim=0)
 
-            q_next=self.model(next_state_tensor).detach()
+            q_next=self.model(next_state_tensor,next_outsiders_tensor).detach()
             
-            q_eval=self.main_model(next_state_tensor)
+            q_eval=self.main_model(next_state_tensor,next_outsiders_tensor)
 
             reward=torch.tensor(reward,dtype=torch.float32).to(DEVICE).unsqueeze(-1)
 

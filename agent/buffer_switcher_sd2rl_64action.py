@@ -1,5 +1,5 @@
 import torch
-from buffer_switcher_model import Buffer_switcher_model
+from model_code.buffer_switcher_model import Buffer_switcher_model
 from env import Env
 import random
 import copy

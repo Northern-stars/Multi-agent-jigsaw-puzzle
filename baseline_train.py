@@ -7,10 +7,12 @@ import torch
 import os
 import random
 
+from pretrain_1 import pretrain_model
 
-MODEL_NAME="LocalSwitcher_92.pth"
-MODEL_PATH=os.path.join("model",MODEL_NAME)
-SWAP_NUM=[5,5,5,5]
+
+MODEL_NAME="modulator"
+MODEL_PATH=os.path.join("model","LocalSwitcher_92_"+MODEL_NAME+".pth")
+SWAP_NUM=[5,5,8,8]
 MAX_STEP=[200,200,200,200]
 SHOW_IMAGE=False
 LOAD_MODEL=True
@@ -18,10 +20,10 @@ TRAIN_PER_STEP=25
 EPSILON=0.5
 EPSILON_MIN=0.1
 EPSILON_GAMMA=0.998
-FILE_NAME="_baseline92_train"
+FILE_NAME="_baseline92_train_{}".format(MODEL_NAME)
 GAMMA=0.995
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE=25
+BATCH_SIZE=50
 
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
@@ -55,10 +57,14 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
             max_step, swap_num = MAX_STEP[3], SWAP_NUM[3]
         elif epoch > 200:
             max_step, swap_num = MAX_STEP[2], SWAP_NUM[2]
+            local_switcher.recommand=False
         elif epoch > 100:
             max_step, swap_num = MAX_STEP[1], SWAP_NUM[1]
+            local_switcher.recommand_num=40
         else:
             max_step, swap_num = MAX_STEP[0], SWAP_NUM[0]
+            local_switcher.recommand=True
+            local_switcher.recommand_num=20
 
 
         index=random.randint(0,8999)
@@ -102,7 +108,7 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
         if len(reward_sum)!=0:
             print(f"Epoch: {epoch}, step: {step}, done: {done}, reward: {sum(reward_sum)/len(reward_sum) if step!=0 else 0 }")
             print(f"Permutation list: {env.permutation_list}")
-            reward_record.append(sum(reward_sum)/len(reward_sum))
+            reward_record.append([sum(reward_sum)/len(reward_sum)])
             done_record.append(done)
         else:
             print(f"Epoch: {epoch}, invalid initial state")
@@ -114,8 +120,8 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
         torch.save(local_switcher.model.state_dict(),MODEL_PATH)
         save_log("reward"+FILE_NAME,reward_record)
         save_log("done"+FILE_NAME,done_record)
-    reward_record=[[a] for a in reward_record]
-    plot_reward_curve(reward_record,done_record,FILE_NAME)
+
+        plot_reward_curve(reward_record,done_record,FILE_NAME)
 
 def test(test_env:Env,test_local_switcher:Local_switcher,swap_num=5,max_step=50):
     acc=[]
@@ -165,6 +171,8 @@ def test(test_env:Env,test_local_switcher:Local_switcher,swap_num=5,max_step=50)
         save_log("test_done"+FILE_NAME,acc)
         print(f"Final permutation: {test_env.permutation_list[0]}")
         print(f"Test {i}: done:{done}, cate:{cate}, hori:{hori}, vert:{vert}, consistency:{consistency}")
+    print(f"Final acc: {np.mean(acc)}, hori: {np.mean(hori_acc)}, vert: {np.mean(vert_acc)}, cate: {np.mean(cate_acc)}")
+
 
             
         
@@ -179,17 +187,25 @@ if __name__=="__main__":
         epsilon_gamma=EPSILON_GAMMA,
         buffer_size=0
     )
-    model=Local_switcher_model(2048,1024,2048,1024,1).to(DEVICE)
+    model=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.3).to(DEVICE)
     # model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
-    model.fen_model.ef.load_state_dict(torch.load("model/pairwise_pretrain_ef.pth"))
-    switcher=Local_switcher(model,2000,GAMMA,BATCH_SIZE,env,93)
+    # model.fen_model.ef.load_state_dict(torch.load("model/pairwise_pretrain_ef.pth"))
 
-    # run_maze(
-    #     env,
-    #     switcher,
-    #     500,
-    #     LOAD_MODEL
-    # )
+    hori_pretrain=pretrain_model(512,512,MODEL_NAME)
+    hori_pretrain.load_state_dict(torch.load(f"model/hori_{MODEL_NAME}.pth"))
+    vert_pretrain=pretrain_model(512,512,MODEL_NAME)
+    vert_pretrain.load_state_dict(torch.load(f"model/vert_{MODEL_NAME}.pth"))
+    model.fen_model.hori_ef.load_state_dict(hori_pretrain.ef.state_dict())
+    model.fen_model.vert_ef.load_state_dict(vert_pretrain.ef.state_dict())
+    
+    switcher=Local_switcher(model,2000,GAMMA,BATCH_SIZE,env,93,recommand=False)
+
+    run_maze(
+        env,
+        switcher,
+        500,
+        LOAD_MODEL
+    )
     test_env=Env(
         test_x,
         test_y,
@@ -200,8 +216,12 @@ if __name__=="__main__":
         buffer_size=0
     )
 
-    test_switcher=Local_switcher(model,0,GAMMA,BATCH_SIZE,test_env,93)
+    test_switcher=Local_switcher(model,0,GAMMA,BATCH_SIZE,test_env,93,recommand=False)
     test(test_env,test_switcher)
+
+    # test_done=read_log("test_done"+FILE_NAME)
+    # print(f"Test acc: {np.mean(test_done)}")
+
 
     # reward_record=read_log("reward"+FILE_NAME)
     # done_record=read_log("done"+FILE_NAME)

@@ -10,10 +10,10 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-import Vit
+import model_code.Vit as Vit
 # from pretrain import pretrain_model
-from pretrain_1 import pretrain_model
-from piece_compare import DeepuzzleModel_pieceStyle as compare_model
+from pretrain.pretrain_1 import pretrain_model
+from model_code.piece_compare import DeepuzzleModel_pieceStyle as compare_model
 
 test_x_path = 'dataset/test_img_48gap_33.npy'
 test_y_path = 'dataset/test_label_48gap_33.npy'
@@ -358,11 +358,13 @@ def get_candidate(node_list):
                 candidate_list.append(new_candidate)
     return candidate_list
 
-def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,node_list,permutation2=None):
+def get_best_candidate(img_idx,cur_node:Node,hori_score,vert_score,cate_score,node_list,permutation2=None,first_used_list=None):
     node_list_=copy.deepcopy(node_list)
     used_list=get_used_list(node_list)
     parent_piece=cur_node.parent.piece
     position=cur_node.absolute_position-cur_node.parent.absolute_position
+    if not first_used_list is None :
+        used_list+=first_used_list
     if position==-1: #left
         score_matrix=hori_score[img_idx,:,parent_piece]
         # score_matrix=hori_score[img_idx,0:9,parent_piece]
@@ -487,22 +489,21 @@ def generating_spanning_tree(img_idx):
         best_node.set_parent()
         node_list.append(best_node)
 
-        
-    #Second cover
-    permutation2=get_permutation(node_list)
-    node_list=[Node(4,None)]
-    node_list[0].piece=4
+    first_used_list=get_permutation(node_list)
+    node_list2=[Node(4,None)]
+    node_list2[0].piece=13
     step=0
+
     while True:
         step+=1
-        check_valid(node_list)
-        current_candidate_list=get_candidate(node_list)
+        check_valid(node_list2)
+        current_candidate_list=get_candidate(node_list2)
         candidate_position=get_absolute_list(current_candidate_list)
         # print(f"Step: {step},candidate_position: {candidate_position},node: {get_absolute_list(node_list)}")
         # for node in node_list:
         #     print(f"Absolute position: {node.absolute_position}, left: {node.left}, right: {node.right}, up: {node.up}, down: {node.down}")
         
-        if len(node_list)==9:
+        if len(node_list2)==9:
             break
         # if len(current_candidate_list)==0:
         #     break
@@ -510,13 +511,45 @@ def generating_spanning_tree(img_idx):
         best_score=0
 
         for candidate in current_candidate_list:
-            candidate,score=get_best_candidate(img_idx,candidate,hori_score,vert_score,cate_score,node_list,permutation2)
+            candidate,score=get_best_candidate(img_idx,candidate,hori_score,vert_score,cate_score,node_list2,first_used_list=first_used_list)
             if score>best_score or best_node is None:
                 best_score=score
                 best_node=candidate
 
         best_node.set_parent()
-        node_list.append(best_node)
+        node_list2.append(best_node)
+
+
+    permutation2=get_permutation(node_list2)
+    #Second cover
+    # permutation2=get_permutation(node_list)
+    # node_list=[Node(4,None)]
+    # node_list[0].piece=4
+    # step=0
+    # while True:
+    #     step+=1
+    #     check_valid(node_list)
+    #     current_candidate_list=get_candidate(node_list)
+    #     candidate_position=get_absolute_list(current_candidate_list)
+    #     # print(f"Step: {step},candidate_position: {candidate_position},node: {get_absolute_list(node_list)}")
+    #     # for node in node_list:
+    #     #     print(f"Absolute position: {node.absolute_position}, left: {node.left}, right: {node.right}, up: {node.up}, down: {node.down}")
+        
+    #     if len(node_list)==9:
+    #         break
+    #     # if len(current_candidate_list)==0:
+    #     #     break
+    #     best_node=None
+    #     best_score=0
+
+    #     for candidate in current_candidate_list:
+    #         candidate,score=get_best_candidate(img_idx,candidate,hori_score,vert_score,cate_score,node_list,permutation2)
+    #         if score>best_score or best_node is None:
+    #             best_score=score
+    #             best_node=candidate
+
+    #     best_node.set_parent()
+    #     node_list.append(best_node)
     
     #Third cover
     # permutation2=get_permutation(node_list)
@@ -549,7 +582,7 @@ def generating_spanning_tree(img_idx):
     #     node_list.append(best_node)
 
     permutation=get_permutation(node_list)
-    return permutation
+    return permutation+permutation2
 
 def get_local_accuracy(permutation):
     hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
@@ -601,21 +634,22 @@ def greedy_test(hori_score,vert_score,cate_score=None,show=False):
         #     if (best_perm[j]>=4):best_perm[j]+=1
         #     elif best_perm[j]>=13: best_perm[j]+=2
         best_perm=generating_spanning_tree(i)
-        hori_right,vert_right,cate_right=get_local_accuracy(best_perm)
-        hori_acc.append(hori_right)
-        vert_acc.append(vert_right)
-        cate_acc.append(cate_right)
+        hori_right,vert_right,cate_right=get_local_accuracy(best_perm[0:9])
+        hori_right2,vert_right2,cate_right2=get_local_accuracy(best_perm[9:18])
+        hori_acc.append((hori_right+hori_right2)/2)
+        vert_acc.append((vert_right+vert_right2)/2)
+        cate_acc.append((cate_right+cate_right2)/2)
         perm.append(best_perm)
         
-        greedy_score=get_score(i,best_perm,hori_score,vert_score,cate_score)
-        true_score=get_score(i,list(range(0,9)),hori_score,vert_score,cate_score)
+        greedy_score=get_score(i,best_perm[0:9],hori_score,vert_score,cate_score)+get_score(i,best_perm[9:18],hori_score,vert_score,cate_score)
+        true_score=get_score(i,list(range(0,9)),hori_score,vert_score,cate_score)+get_score(i,list(range(9,18)),hori_score,vert_score,cate_score)
         if show:
             print(f"Accuracy: {np.mean(right)}, final permutation: {best_perm}")
             print(f"Local acc: hori: {np.mean(hori_acc)}, vert: {np.mean(vert_acc)}, cate: {np.mean(cate_acc)}")
             print(f"Greedy score: {greedy_score}, answer score: {true_score}")
         
 
-        if best_perm==list(range(0,9)):
+        if best_perm==list(range(0,18)):
             right.append(1)
         elif -1 in best_perm:
             error_count+=1

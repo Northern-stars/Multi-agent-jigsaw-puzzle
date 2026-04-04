@@ -1,6 +1,6 @@
-from single_puzzle_env import Env
-from local_switcher import Local_switcher
-from local_switcher_model import Local_switcher_model
+from env.single_puzzle_env import Env
+from agent.local_switcher import Local_switcher
+from model_code.local_switcher_model import Local_switcher_model
 from utils import plot_reward_curve,save_log,read_log
 import torch
 import numpy as np

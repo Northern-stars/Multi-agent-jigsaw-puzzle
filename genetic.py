@@ -7,7 +7,7 @@ import os
 import random, time
 import numpy as np
 import multiprocessing
-from Evaluator_dict import Evaluator
+from legacy.Evaluator_dict import Evaluator
 
 
 class GeneticAlgorithm:

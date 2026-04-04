@@ -10,7 +10,7 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
-from Vit import VisionTransformer
+from model_code.Vit import VisionTransformer
 from tqdm import tqdm
 
 

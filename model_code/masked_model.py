@@ -4,7 +4,7 @@ import numpy as np
 import copy
 import itertools
 from torchvision.models import efficientnet_b0,efficientnet_b3
-from pretrain import pretrain_model
+from pretrain.pretrain import pretrain_model
 import cv2
 import os
 import time

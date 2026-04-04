@@ -7,8 +7,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # 引入上面写的模块
-from discriminator_noise_model import DiscriminatorModel
-from discriminator_dataset_noise import SiameseNoiseDataset
+from model_code.discriminator_noise_model import DiscriminatorModel
+from pretrain.discriminator_dataset_noise import SiameseNoiseDataset
 
 # ================= 配置 =================
 BATCH_SIZE = 64
