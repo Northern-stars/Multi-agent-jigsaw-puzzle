@@ -126,13 +126,10 @@ class Local_switcher:
         score_list=np.zeros(self.action_num)
         for i in range(self.action_num):
             permutation_copy=self.permute(permutation,i)
-            score_list[i]=self.env.get_local_score(permutation_copy,image_index)+self.env.get_consistency_reward(permutation_copy,image_index)
+            # score_list[i]=self.env.get_local_score(permutation_copy,image_index)+self.env.get_consistency_reward(permutation_copy,image_index)
+            score_list[i]=self.env.get_visual_score(permutation_copy,image_index)
         best_action=(np.argsort(score_list)[::-1]).tolist()
         return best_action[:self.recommand_num]
-
-
-        
-
 
     def update(self,show=False):
         # print("Updating local switcher")

@@ -7,6 +7,7 @@ import cv2
 import itertools
 from agent.geneticAlgorithm import GeneticAlgorithm
 
+DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 
 class Env:
     def __init__(self,
@@ -49,6 +50,8 @@ class Env:
         self.greedy_initial=greedy_initial
         if greedy_initial:
             self.ga_solver=GeneticAlgorithm(hori_model,vert_model)
+        self.hori_model=hori_model
+        self.vert_model=vert_model
 
     
     def load_image(self,image_num,id=[]):
@@ -238,6 +241,7 @@ class Env:
         print(f"Initial permutation {initial_permutation}")
         self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                 for j in range(self.image_num)]
+        self.summon_score_matrix(self.permutation2piece)
         
     def get_accuracy(self,permutation_list):
         permutation_copy=copy.deepcopy(permutation_list)
@@ -281,3 +285,59 @@ class Env:
         hori_accuracy=np.mean([hori_list[i]/len(hori_set) for i in range(len(permutation_list))])
         vert_accuracy=np.mean([vert_list[i]/len(vert_set) for i in range(len(permutation_list))])
         return done_accuracy,consistency_accuracy,category_accuracy,hori_accuracy,vert_accuracy
+    
+    def summon_score_matrix(self,img_dict):
+        hori_score_matrix=np.ones([1,18,18],dtype=float)
+        vert_score_matrix=np.ones([1,18,18],dtype=float)
+        # Collect all pairs
+        pairs = []
+        for i0 in range(18):
+            for i1 in range(18):
+                if i0 == i1:
+                    continue
+                pairs.append((i0, i1, img_dict[i0], img_dict[i1]))
+        
+        # Batch processing
+        batch_size = 128
+        for start in range(0, len(pairs), batch_size):
+            if start+batch_size>=len(pairs):
+                batch=pairs[start:]
+            else:
+                batch = pairs[start:start + batch_size]
+            frag0_batch = torch.stack([p[2] for p in batch]).to(DEVICE)
+            frag1_batch = torch.stack([p[3] for p in batch]).to(DEVICE)
+            
+            with torch.no_grad():
+                hori_score0_batch = self.hori_model(frag0_batch, frag1_batch)
+                hori_score1_batch = self.hori_model(frag1_batch, frag0_batch)
+                
+                vert_score0_batch = self.vert_model(frag0_batch, frag1_batch)
+                vert_score1_batch = self.vert_model(frag1_batch, frag0_batch)
+            
+            for idx, (i0, i1, _, _) in enumerate(batch):
+                hori_score_matrix[0][i0][i1] = float(hori_score0_batch[idx].detach())
+                hori_score_matrix[0][i1][i0] = float(hori_score1_batch[idx].detach())
+                
+                vert_score_matrix[0][i0][i1] = float(vert_score0_batch[idx].detach())
+                vert_score_matrix[0][i1][i0] = float(vert_score1_batch[idx].detach())
+        self.hori_score_matrix=hori_score_matrix
+        self.vert_score_matrix=vert_score_matrix
+        return hori_score_matrix,vert_score_matrix
+    
+    def get_visual_score(self,perm,img_index):
+        perm_=copy.deepcopy(perm)
+        perm_.insert(self.piece_num//2,img_index*self.piece_num+self.piece_num//2)
+        hori_set=[(i,i+1) for i in [j for j in range(9) if j%3!=3-1 ]]
+        vert_set=[(i,i+3) for i in range(3*2)]
+        final_score=0
+        for i in range(len(hori_set)):
+            i0,i1=perm_[hori_set[i][0]],perm_[hori_set[i][1]]
+            if i0!=-1 & i1!=-1:
+                score=self.hori_score_matrix[0][i0][i1]
+                final_score+=score
+        for i in range(len(vert_set)):
+            i0,i1=perm_[vert_set[i][0]],perm_[vert_set[i][1]]
+            if i0!=-1 & i1!=-1:
+                score=self.vert_score_matrix[0][i0][i1]
+                final_score+=score
+        return final_score
