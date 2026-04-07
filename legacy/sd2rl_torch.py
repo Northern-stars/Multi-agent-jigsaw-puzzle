@@ -1,3 +1,6 @@
+import sys
+sys.path.append("..")
+sys.path.append(".")
 import time
 import random
 import numpy as np
@@ -9,6 +12,9 @@ import torch
 import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0,efficientnet_b3
+from model_code.fen_model import fen_model
+from model_code.local_switcher_model import Local_switcher_model
+from utils.utils import plot_reward_curve,model_fen_load
 # from pretrain import fen_model
 
 
@@ -30,21 +36,22 @@ ACHIEVE_REWARD = 1000.
 
 LOAD=False
 
-BATCH_SIZE=5
+BATCH_SIZE=15
 n_features=8
 
 EPSILON_MAX=0.5
 EPSILON_MIN=0.1
 GAMMA=0.995
-BATCH_SIZE=5
 
 SAMPLE_ACTION_NUMBER=28
 
-TRAIN_NUMBER=1000
+TRAIN_NUMBER=500
 TEST_NUMBER=300
 
 IS_TEST_SHUFFLE=True
 
+MODEL_NAME="modulator"
+MODEL_PATH=os.path.join("model","LocalSwitcher_92_"+MODEL_NAME+".pth")
 train_x_path = 'dataset/train_img_48gap_33-001.npy'
 train_y_path = 'dataset/train_label_48gap_33.npy'
 
@@ -72,8 +79,8 @@ test_vert_list=np.zeros(9000)
 vert_list=np.zeros(9000)
 
 
-TARGET_MODEL_NAME="model/sd2rl256.pth"
-MAIN_MODEL_NAME='model/sd2rl_main256.pth'
+TARGET_MODEL_NAME=f"model/sd2rl_{MODEL_NAME}.pth"
+MAIN_MODEL_NAME=f'model/sd2rl_main_{MODEL_NAME}.pth'
 
 
 
@@ -436,93 +443,89 @@ class Puzzle_Env(object):
 
 # target_DQN=dqn_model(256).to(device)
 # main_DQN=dqn_model(256).to(device)
-class fen_model(nn.Module):
-    def __init__(self, hidden_size1, hidden_size2):
-        super(fen_model, self).__init__()
-        self.ef = efficientnet_b3(weights="DEFAULT")
-        self.ef.classifier = nn.Linear(1536, 1024)
+# class fen_model(nn.Module):
+#     def __init__(self, hidden_size1, hidden_size2):
+#         super(fen_model, self).__init__()
+#         self.ef = efficientnet_b3(weights="DEFAULT")
+#         self.ef.classifier = nn.Linear(1536, 1024)
 
-        self.contrast_fc_hori = nn.Linear(2048, 1024)
-        self.contrast_fc_vert = nn.Linear(2048, 1024)
+#         self.contrast_fc_hori = nn.Linear(2048, 1024)
+#         self.contrast_fc_vert = nn.Linear(2048, 1024)
 
-        self.fc1 = nn.Linear(1024*12, hidden_size1)
-        self.relu = nn.ReLU()
-        self.bn = nn.BatchNorm1d(hidden_size1)
-        self.do = nn.Dropout1d(p=0.1)
-        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
+#         self.fc1 = nn.Linear(1024*12, hidden_size1)
+#         self.relu = nn.ReLU()
+#         self.bn = nn.BatchNorm1d(hidden_size1)
+#         self.do = nn.Dropout1d(p=0.1)
+#         self.fc2 = nn.Linear(hidden_size1, hidden_size2)
 
-        # 定义 index 对
-        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
-        self.vert_set = [(i, i+3) for i in range(6)]
+#         # 定义 index 对
+#         self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
+#         self.vert_set = [(i, i+3) for i in range(6)]
 
-    def forward(self, image):
-        B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
+#     def forward(self, image):
+#         B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
 
-        # ---- 1. 切片并 reshape 成 batch ----
-        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
-        # patches: (B, C, 3, 3, 96, 96)
-        patches = patches.permute(0,2,3,1,4,5).contiguous()
-        patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
+#         # ---- 1. 切片并 reshape 成 batch ----
+#         patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
+#         # patches: (B, C, 3, 3, 96, 96)
+#         patches = patches.permute(0,2,3,1,4,5).contiguous()
+#         patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
 
-        # ---- 2. 一次性送进 ef ----
-        feats = self.ef(patches)   # (B*9, 1024)
-        feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
+#         # ---- 2. 一次性送进 ef ----
+#         feats = self.ef(patches)   # (B*9, 1024)
+#         feats = feats.view(B, 9, 1024)  # (B, 9, 1024)
 
-        # ---- 3. 构建横向对 ----
-        hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
-                                  for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
-        hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
+#         # ---- 3. 构建横向对 ----
+#         hori_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+#                                   for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
+#         hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
 
-        # ---- 4. 构建纵向对 ----
-        vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
-                                  for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
-        vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
+#         # ---- 4. 构建纵向对 ----
+#         vert_pairs = torch.stack([torch.cat([feats[:, i, :], feats[:, j, :]], dim=-1) 
+#                                   for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
+#         vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
 
-        # ---- 5. 拼接所有特征 ----
-        feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
-        feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
+#         # ---- 5. 拼接所有特征 ----
+#         feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
+#         feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
 
-        # ---- 6. 全连接部分 ----
-        x = self.do(feature_tensor)
-        x = self.fc1(x)
-        x = self.do(x)
-        x = self.bn(x)
-        x = self.relu(x)
-        x = self.fc2(x)
+#         # ---- 6. 全连接部分 ----
+#         x = self.do(feature_tensor)
+#         x = self.fc1(x)
+#         x = self.do(x)
+#         x = self.bn(x)
+#         x = self.relu(x)
+#         x = self.fc2(x)
 
-        return x
+#         return x
     
-class Local_switcher_model(nn.Module):
-    def __init__(self,fen_model_hidden1,fen_model_hidden2,hidden1,hidden2,action_num,dropout=0.1):
-        super().__init__()
-        self.fen_model=fen_model(fen_model_hidden1,fen_model_hidden2)
-        self.fc1=nn.Linear(fen_model_hidden2,hidden1)
-        self.relu=nn.ReLU()
-        self.bn1=nn.BatchNorm1d(hidden1)
-        self.fc2=nn.Linear(hidden1,hidden2)
-        self.do=nn.Dropout(dropout)
-        self.bn2=nn.BatchNorm1d(hidden2)
-        self.outlayer=nn.Linear(hidden2,action_num)
+# class Local_switcher_model(nn.Module):
+#     def __init__(self,fen_model_hidden1,fen_model_hidden2,hidden1,hidden2,action_num,dropout=0.1):
+#         super().__init__()
+#         self.fen_model=fen_model(fen_model_hidden1,fen_model_hidden2)
+#         self.fc1=nn.Linear(fen_model_hidden2,hidden1)
+#         self.relu=nn.ReLU()
+#         self.bn1=nn.BatchNorm1d(hidden1)
+#         self.fc2=nn.Linear(hidden1,hidden2)
+#         self.do=nn.Dropout(dropout)
+#         self.bn2=nn.BatchNorm1d(hidden2)
+#         self.outlayer=nn.Linear(hidden2,action_num)
     
-    def forward(self,image):
-        feature_tensor=self.fen_model(image)
-        out=self.fc1(feature_tensor)
-        out=self.relu(out)
-        out=self.bn1(out)
-        out=self.do(out)
-        out=self.fc2(out)
-        out=self.relu(out)
-        out=self.bn2(out)
-        out=self.outlayer(out)
+#     def forward(self,image):
+#         feature_tensor=self.fen_model(image)
+#         out=self.fc1(feature_tensor)
+#         out=self.relu(out)
+#         out=self.bn1(out)
+#         out=self.do(out)
+#         out=self.fc2(out)
+#         out=self.relu(out)
+#         out=self.bn2(out)
+#         out=self.outlayer(out)
         
-        return out
+#         return out
 
-target_DQN=Local_switcher_model(fen_model_hidden1=2048,
-                                              fen_model_hidden2=1024,
-                                              hidden1=2048,
-                                              hidden2=1024,
-                                              action_num=1).to(device)
-
+target_DQN=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.1).to(device)
+model_fen_load(target_DQN,MODEL_NAME)
 main_DQN=copy.deepcopy(target_DQN)
 
 loss_fn=torch.nn.MSELoss()
@@ -735,15 +738,7 @@ class Agent:
             print("step:",self.learn_step_counter,"loss:",loss.item())
 
 
-def plot_reward_curve(reward_record):
-        avg_reward=[]
-        for i in range(len(reward_record)):
-            avg_reward.append(reward_record[i])
-        plt.plot(range(len(avg_reward)),avg_reward)
-        plt.xlabel("Episode")
-        plt.ylabel("Average Reward")
-        plt.title("Reward Curve")
-        plt.show()
+
 
 
 def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=1e-5):
@@ -755,27 +750,29 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
     # print(len(hori_list))
     np.random.shuffle(train_id_list)
     global optimizer
+    global SAMPLE_ACTION_NUMBER
     if load:
         target_state_dict=torch.load(TARGET_MODEL_NAME)
         target_DQN.load_state_dict(target_state_dict)
         main_state_dict=torch.load(MAIN_MODEL_NAME)
         main_DQN.load_state_dict(main_state_dict)
     reward_record=[]
+    optimizer=torch.optim.Adam(main_DQN.parameters(),lr=start_phase_lr,eps=1e-8)
     for i in range(TRAIN_NUMBER):
         # RL.empty_memory()
         if i > 300:
-            global SAMPLE_ACTION_NUMBER
+
             SAMPLE_ACTION_NUMBER = 28
             STOP_STEP = 300
-            optimizer=torch.optim.Adam(main_DQN.parameters(),lr=final_phase_lr,eps=1e-8)
+
         elif i > 100:
             SAMPLE_ACTION_NUMBER = 28
             STOP_STEP =300
-            optimizer=torch.optim.Adam(main_DQN.parameters(),lr=middle_phase_lr,eps=1e-8)
+
         else:
             SAMPLE_ACTION_NUMBER = 28
             STOP_STEP = 400
-            optimizer=torch.optim.Adam(main_DQN.parameters(),lr=start_phase_lr,eps=1e-8)
+
         episode_i = train_id_list[i % len(train_y)]
         y_true = onehot_2_index(train_y[episode_i])
         init_index_list = env.reset(hori_list[episode_i], vert_list[episode_i], cate_list[episode_i],
@@ -821,20 +818,15 @@ def run_maze(load=False,start_phase_lr=1e-4,middle_phase_lr=1e-4,final_phase_lr=
         print(f"Action_space: {RL.action_list}")
         torch.save(target_DQN.state_dict(),TARGET_MODEL_NAME)
         torch.save(main_DQN.state_dict(),MAIN_MODEL_NAME)
-        reward_record.append(total_reward / (p_step + 1))
+        reward_record.append([total_reward / (p_step + 1)])
 
         # update epsilon
         RL.epsilon = RL.epsilon * RL.epsilon_decay if RL.epsilon > RL.epsilon_min else RL.epsilon_min
         # print(RL.epsilon)
 
         # show_plot()
-
-    # end of game
-    torch.save(target_DQN.state_dict(),TARGET_MODEL_NAME)
-    torch.save(main_DQN.state_dict(),MAIN_MODEL_NAME)
-    print('game over')
-    plot_reward_curve(reward_record)
-
+        plot_reward_curve(reward_record,None,"sd2rl_"+MODEL_NAME)
+    
 
 
 def evaluate_test_set():

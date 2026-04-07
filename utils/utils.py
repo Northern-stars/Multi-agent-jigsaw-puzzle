@@ -3,26 +3,40 @@ import matplotlib.ticker as ticker
 import json
 import os
 import numpy as np
+import sys
+sys.path.append("..")
+sys.path.append(".")
+from pretrain.pretrain_1 import pretrain_model
+import torch
 
-def plot_reward_curve(reward_record,done_record,file_name):
+
+def plot_reward_curve(reward_record=None,done_record=None,file_name=""):
         avg_reward=[]
         acc=[]
+        reward_flag=not reward_record is None
+        done_flag=not done_record is None
         for i in range(len(reward_record)):
-            avg_reward.append(sum(reward_record[i])/len(reward_record[i]))
-            acc.append(done_record[i] if i==0 else (acc[i-1]*i+done_record[i])/(i+1) if i<=100 else np.mean(acc[i-99:i+1]))
-        plt.ylim((0,1000))
-        plt.plot(range(len(avg_reward)),avg_reward)
-        plt.xlabel("Episode")
-        plt.ylabel("Average Reward_"+file_name)
-        plt.title("Reward Curve")
-        plt.savefig(os.path.join("result","reward"+file_name+".png"))
-        plt.cla()
-        plt.ylim((0,1))
-        plt.plot(range(len(acc)),acc)
-        plt.xlabel("Episode")
-        plt.ylabel("Average accuracy")
-        plt.title("Acc Curve_"+file_name)
-        plt.savefig(os.path.join("result","acc"+file_name+".png"))
+            if reward_flag:
+                avg_reward.append(sum(reward_record[i])/len(reward_record[i]))
+            if done_flag:
+                acc.append(done_record[i] if i==0 else (acc[i-1]*i+done_record[i])/(i+1) if i<=100 else np.mean(acc[i-99:i+1]))
+        if reward_flag:
+            plt.clf()
+            plt.ylim((0,1000))
+            plt.plot(range(len(avg_reward)),avg_reward)
+            plt.xlabel("Episode")
+            plt.ylabel("Average Reward_"+file_name)
+            plt.title("Reward Curve")
+            plt.savefig(os.path.join("result","reward"+file_name+".png"))
+        
+        if done_flag:
+            plt.clf()
+            plt.ylim((0,1))
+            plt.plot(range(len(acc)),acc)
+            plt.xlabel("Episode")
+            plt.ylabel("Average accuracy")
+            plt.title("Acc Curve_"+file_name)
+            plt.savefig(os.path.join("result","acc"+file_name+".png"))
     
 def save_log(file_name,log):
     with open(os.path.join("json",file_name+".json"),"w") as file:
@@ -54,3 +68,11 @@ def plot_confusion_matrix(confusion_matrix,category_list,filename):
 
     # sphinx_gallery_thumbnail_number = 2
     plt.savefig(os.path.join("result","confusion_matrix_"+filename+".png"))
+
+def model_fen_load(model:torch.nn.Module,model_name):
+    hori_pretrain=pretrain_model(512,512,model_name)
+    hori_pretrain.load_state_dict(torch.load(f"model/hori_{model_name}.pth"))
+    vert_pretrain=pretrain_model(512,512,model_name)
+    vert_pretrain.load_state_dict(torch.load(f"model/vert_{model_name}.pth"))
+    model.fen_model.hori_ef.load_state_dict(hori_pretrain.ef.state_dict())
+    model.fen_model.vert_ef.load_state_dict(vert_pretrain.ef.state_dict())

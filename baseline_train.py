@@ -113,6 +113,19 @@ def run_maze(env:Env,local_switcher:Local_switcher,epoch_num=500,load=True):
             reward_record.append([sum(reward_sum)/len(reward_sum)])
             done_record.append(done)
         else:
+            cur_state=env.permutation_list
+            next_state=env.permutation_list,
+            action=local_switcher.action_num-1
+            local_switcher.recording_memory(
+                    image_id=env.image_id,
+                    image_index=0,
+                    state=cur_state,
+                    action=action,
+                    reward=reward,
+                    next_state=next_state,
+                    done=done
+                )
+            print(f"Epoch: {epoch}, invalid initial state")
             print(f"Epoch: {epoch}, invalid initial state")
             
         if env.epsilon>EPSILON_MIN:
@@ -204,7 +217,7 @@ if __name__=="__main__":
         hori_model=hori_pretrain,
         vert_model=vert_pretrain
     )
-    model=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.3).to(DEVICE)
+    model=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.1).to(DEVICE)
     # model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     # model.fen_model.ef.load_state_dict(torch.load("model/pairwise_pretrain_ef.pth"))
 
@@ -222,6 +235,8 @@ if __name__=="__main__":
         500,
         LOAD_MODEL
     )
+
+    model.load_state_dict(torch.load(MODEL_PATH))
     test_env=Env(
         test_x,
         test_y,
