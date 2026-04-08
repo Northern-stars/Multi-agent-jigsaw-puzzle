@@ -22,7 +22,7 @@ class Env:
                  epochs=10,
                  tau=0.01,
                  device="cuda" if torch.cuda.is_available() else "cpu",
-                 reward_dict={"PAIRWISE":.4,"CATE":.6,"CONSISTENCY":0.3,"DONE_REWARD":1000,"CONSISTENCY_REWARD":100,"PANELTY":-0.5}
+                 reward_dict={"PAIRWISE":.2,"CATE":.8,"CONSISTENCY":0.5,"DONE_REWARD":1000,"CONSISTENCY_REWARD":100,"PANELTY":-0.5}
                  ,greedy_initial=False
                  ,hori_model=None,
                  vert_model=None
@@ -115,9 +115,9 @@ class Env:
 
                 hori_pair_set=(permutation_copy[hori_set[j][0]],permutation_copy[hori_set[j][1]])
                 vert_pair_set=(permutation_copy[vert_set[j][0]],permutation_copy[vert_set[j][1]])
-                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==image_index):
                     local_reward+=1*self.reward_dict["PAIRWISE"]
-                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==image_index):
                     local_reward+=1*self.reward_dict["PAIRWISE"]
         for j in range(piece_num):
                 if permutation_copy[j]!=-1:
@@ -157,9 +157,9 @@ class Env:
 
                 hori_pair_set=(permutation_copy[i][hori_set[j][0]],permutation_copy[i][hori_set[j][1]])
                 vert_pair_set=(permutation_copy[i][vert_set[j][0]],permutation_copy[i][vert_set[j][1]])
-                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num):
+                if (-1 not in hori_pair_set) and (hori_pair_set[0]%piece_num,hori_pair_set[1]%piece_num) in hori_set and (hori_pair_set[0]//piece_num==hori_pair_set[1]//piece_num)and(hori_pair_set[0]//piece_num==i):
                     local_reward_list[i]+=1*self.reward_dict["PAIRWISE"]
-                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num):
+                if (-1 not in vert_pair_set) and (vert_pair_set[0]%piece_num,vert_pair_set[1]%piece_num) in vert_set and (vert_pair_set[0]//piece_num==vert_pair_set[1]//piece_num)and (vert_pair_set[0]//piece_num==i):
                     local_reward_list[i]+=1*self.reward_dict["PAIRWISE"]
 
             piece_range=[0 for j in range (len(permutation_list))]
@@ -239,7 +239,11 @@ class Env:
             initial_permutation.pop(9*i+9//2-i)
         if self.greedy_initial:
             initial_permutation,greedy_score=self.ga_solver.ga_search(16,self.permutation2piece,init_solution=[initial_permutation])#Not modified for multi image
-            initial_permutation=list(initial_permutation)
+            # initial_permutation=list(range(0,18))
+            # initial_permutation.pop(9+9//2)
+            # initial_permutation.pop(9//2)
+            initial_permutation=initial_permutation.tolist()
+            
             self.permutation_list=[initial_permutation[j*(self.piece_num-1):(j+1)*(self.piece_num-1)]
                                     for j in range(self.image_num)]
         else:
