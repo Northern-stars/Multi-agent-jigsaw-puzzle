@@ -10,15 +10,21 @@ import random
 
 from pretrain.pretrain_1 import pretrain_model
 
+reward_dict={"PAIRWISE":.2,
+ "CATE":.8,
+ "CONSISTENCY":0.5,
+ "DONE_REWARD":20,
+ "CONSISTENCY_REWARD":10,
+ "PANELTY":-0.5}
 
 MODEL_NAME="modulator"
 MODEL_PATH=os.path.join("model","LocalSwitcher_92_"+MODEL_NAME+".pth")
 SWAP_NUM=[5,5,8,8]
 MAX_STEP=[200,200,200,200]
 SHOW_IMAGE=False
-LOAD_MODEL=True
+LOAD_MODEL=False
 TRAIN_PER_STEP=10
-EPSILON=0.3
+EPSILON=0.5
 EPSILON_MIN=0.1
 EPSILON_GAMMA=0.998
 FILE_NAME="_baseline92_train_{}".format(MODEL_NAME)
@@ -217,7 +223,8 @@ if __name__=="__main__":
         buffer_size=0,
         greedy_initial=True,
         hori_model=hori_pretrain,
-        vert_model=vert_pretrain
+        vert_model=vert_pretrain,
+        reward_dict=reward_dict
     )
     model=Local_switcher_model(512,512,1024,512,1,model_name=MODEL_NAME,dropout=0.1).to(DEVICE)
     # model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
