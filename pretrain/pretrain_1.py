@@ -10,6 +10,9 @@ import itertools
 from torch import nn
 from torchvision.models import efficientnet_b0
 from torch.utils.data import Dataset, DataLoader
+import sys
+sys.path.append(".")
+sys.path.append("..")
 import model_code.Vit as Vit
 from model_code.fen_model import Modulator
 from model_code.piece_compare import DeepuzzleModel_pieceStyle
@@ -286,76 +289,208 @@ def train(epoch_num=5000,load=True):
 
 
 
-def test(hori_model,vert_model):
-    """二分类测试函数"""
+# def test(hori_model,vert_model):
+#     """二分类测试函数"""
+#     with torch.no_grad():
+#         # model.load_state_dict(torch.load(MODEL_NAME))
+#         # model.eval()
+#         # hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
+#         # vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
+#         hori_model.eval()
+#         vert_model.eval()
+        
+#         hori_right = 0
+#         vert_right = 0
+#         total_samples = 0
+        
+#         print("start testing")
+        
+#         # 使用tqdm显示进度
+#         for batch_num, (final_image_hori_a, final_image_hori_b, final_image_vert_a, final_image_vert_b, hori_label, vert_label) in enumerate(tqdm(test_dataloader)):
+#             # 前向传播
+#             # hori_output, vert_output = model(
+#             #     final_image_hori_a.to(device),
+#             #     final_image_hori_b.to(device)
+#             # )
+
+#             hori_output=hori_model(final_image_hori_a.to(device),final_image_hori_b.to(device))
+#             vert_output=vert_model(final_image_vert_a.to(device),final_image_vert_b.to(device))
+            
+#             # 二分类：使用0.5作为阈值
+#             # hori_output和vert_output已经是sigmoid输出，在[0, 1]之间
+#             hori_pred = (hori_output > 0.5).float().cpu()
+#             vert_pred = (vert_output > 0.5).float().cpu()
+            
+#             # 确保标签形状匹配
+#             hori_label = hori_label.float()
+#             vert_label = vert_label.float()
+            
+#             # 计算正确率
+#             batch_size = final_image_hori_a.size(0)
+#             total_samples += batch_size
+            
+#             hori_right += (hori_pred == hori_label).sum().item()
+#             vert_right += (vert_pred == vert_label).sum().item()
+            
+#             # 每100个batch打印一次进度
+#             # if (batch_num + 1) % 100 == 0:
+#             #     hori_acc = hori_right / total_samples
+#             #     vert_acc = vert_right / total_samples
+#             #     print(f"Batch {batch_num+1}/{len(test_dataloader)} - "
+#             #           f"Hori Acc: {hori_acc:.4f}, Vert Acc: {vert_acc:.4f}")
+        
+#         # 最终结果
+#         hori_accuracy = hori_right / total_samples
+#         vert_accuracy = vert_right / total_samples
+        
+#         print(f"\n{'='*50}")
+#         print("Final Test Results:")
+#         print(f"{'='*50}")
+#         print(f"Total samples tested: {total_samples}")
+#         print(f"Horizontal accuracy: {hori_accuracy:.4f} ({hori_right}/{total_samples})")
+#         print(f"Vertical accuracy:   {vert_accuracy:.4f} ({vert_right}/{total_samples})")
+#         print(f"{'='*50}")
+        
+#         return hori_accuracy, vert_accuracy
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score
+import numpy as np
+
+def test(hori_model, vert_model):
+    """二分类测试函数 - 包含F1 Score和混淆矩阵"""
     with torch.no_grad():
-        # model.load_state_dict(torch.load(MODEL_NAME))
-        # model.eval()
-        # hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
-        # vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
         hori_model.eval()
         vert_model.eval()
         
-        hori_right = 0
-        vert_right = 0
-        total_samples = 0
+        # 存储所有预测和标签
+        all_hori_preds = []
+        all_hori_labels = []
+        all_vert_preds = []
+        all_vert_labels = []
         
         print("start testing")
         
         # 使用tqdm显示进度
-        for batch_num, (final_image_hori_a, final_image_hori_b, final_image_vert_a, final_image_vert_b, hori_label, vert_label) in enumerate(tqdm(test_dataloader)):
+        for batch_num, (final_image_hori_a, final_image_hori_b, 
+                        final_image_vert_a, final_image_vert_b, 
+                        hori_label, vert_label) in enumerate(tqdm(test_dataloader)):
+            
             # 前向传播
-            # hori_output, vert_output = model(
-            #     final_image_hori_a.to(device),
-            #     final_image_hori_b.to(device)
-            # )
-
-            hori_output=hori_model(final_image_hori_a.to(device),final_image_hori_b.to(device))
-            vert_output=vert_model(final_image_vert_a.to(device),final_image_vert_b.to(device))
+            hori_output = hori_model(final_image_hori_a.to(device), 
+                                     final_image_hori_b.to(device))
+            vert_output = vert_model(final_image_vert_a.to(device), 
+                                     final_image_vert_b.to(device))
             
             # 二分类：使用0.5作为阈值
-            # hori_output和vert_output已经是sigmoid输出，在[0, 1]之间
             hori_pred = (hori_output > 0.5).float().cpu()
             vert_pred = (vert_output > 0.5).float().cpu()
             
-            # 确保标签形状匹配
-            hori_label = hori_label.float()
-            vert_label = vert_label.float()
-            
-            # 计算正确率
-            batch_size = final_image_hori_a.size(0)
-            total_samples += batch_size
-            
-            hori_right += (hori_pred == hori_label).sum().item()
-            vert_right += (vert_pred == vert_label).sum().item()
-            
-            # 每100个batch打印一次进度
-            # if (batch_num + 1) % 100 == 0:
-            #     hori_acc = hori_right / total_samples
-            #     vert_acc = vert_right / total_samples
-            #     print(f"Batch {batch_num+1}/{len(test_dataloader)} - "
-            #           f"Hori Acc: {hori_acc:.4f}, Vert Acc: {vert_acc:.4f}")
+            # 收集预测和标签
+            all_hori_preds.extend(hori_pred.numpy().flatten())
+            all_hori_labels.extend(hori_label.float().numpy().flatten())
+            all_vert_preds.extend(vert_pred.numpy().flatten())
+            all_vert_labels.extend(vert_label.float().numpy().flatten())
         
-        # 最终结果
+        # 转换为numpy数组
+        hori_preds = np.array(all_hori_preds)
+        hori_labels = np.array(all_hori_labels)
+        vert_preds = np.array(all_vert_preds)
+        vert_labels = np.array(all_vert_labels)
+        
+        # 计算基本指标
+        total_samples = len(hori_labels)
+        hori_right = (hori_preds == hori_labels).sum()
+        vert_right = (vert_preds == vert_labels).sum()
+        
         hori_accuracy = hori_right / total_samples
         vert_accuracy = vert_right / total_samples
         
-        print(f"\n{'='*50}")
-        print("Final Test Results:")
-        print(f"{'='*50}")
-        print(f"Total samples tested: {total_samples}")
-        print(f"Horizontal accuracy: {hori_accuracy:.4f} ({hori_right}/{total_samples})")
-        print(f"Vertical accuracy:   {vert_accuracy:.4f} ({vert_right}/{total_samples})")
-        print(f"{'='*50}")
+        # 计算混淆矩阵和F1 Score
+        # Horizontal
+        hori_cm = confusion_matrix(hori_labels, hori_preds)
+        hori_f1 = f1_score(hori_labels, hori_preds, average='binary')
+        hori_precision = precision_score(hori_labels, hori_preds, average='binary')
+        hori_recall = recall_score(hori_labels, hori_preds, average='binary')
         
-        return hori_accuracy, vert_accuracy
+        # Vertical
+        vert_cm = confusion_matrix(vert_labels, vert_preds)
+        vert_f1 = f1_score(vert_labels, vert_preds, average='binary')
+        vert_precision = precision_score(vert_labels, vert_preds, average='binary')
+        vert_recall = recall_score(vert_labels, vert_preds, average='binary')
+        
+        # 打印结果
+        print(f"\n{'='*60}")
+        print("Final Test Results:")
+        print(f"{'='*60}")
+        print(f"Total samples tested: {total_samples}")
+        print()
+        
+        # Horizontal Results
+        print(f"{'HORIZONTAL':-^60}")
+        print(f"Accuracy:    {hori_accuracy:.4f} ({hori_right}/{total_samples})")
+        print(f"Precision:   {hori_precision:.4f}")
+        print(f"Recall:      {hori_recall:.4f}")
+        print(f"F1 Score:    {hori_f1:.4f}")
+        print(f"\nConfusion Matrix:")
+        print(f"            Predicted")
+        print(f"            Neg   Pos")
+        print(f"Actual Neg  {hori_cm[0,0]:4d}  {hori_cm[0,1]:4d}")
+        print(f"       Pos  {hori_cm[1,0]:4d}  {hori_cm[1,1]:4d}")
+        
+        # 计算额外指标
+        tn, fp, fn, tp = hori_cm.ravel()
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        print(f"\nSpecificity: {specificity:.4f}")
+        print(f"False Positive Rate: {fp/(fp+tn):.4f}" if (fp+tn) > 0 else "N/A")
+        print(f"False Negative Rate: {fn/(fn+tp):.4f}" if (fn+tp) > 0 else "N/A")
+        
+        # Vertical Results
+        print(f"\n{'VERTICAL':-^60}")
+        print(f"Accuracy:    {vert_accuracy:.4f} ({vert_right}/{total_samples})")
+        print(f"Precision:   {vert_precision:.4f}")
+        print(f"Recall:      {vert_recall:.4f}")
+        print(f"F1 Score:    {vert_f1:.4f}")
+        print(f"\nConfusion Matrix:")
+        print(f"            Predicted")
+        print(f"            Neg   Pos")
+        print(f"Actual Neg  {vert_cm[0,0]:4d}  {vert_cm[0,1]:4d}")
+        print(f"       Pos  {vert_cm[1,0]:4d}  {vert_cm[1,1]:4d}")
+        
+        tn, fp, fn, tp = vert_cm.ravel()
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        print(f"\nSpecificity: {specificity:.4f}")
+        print(f"False Positive Rate: {fp/(fp+tn):.4f}" if (fp+tn) > 0 else "N/A")
+        print(f"False Negative Rate: {fn/(fn+tp):.4f}" if (fn+tp) > 0 else "N/A")
+        
+        print(f"\n{'='*60}")
+        
+        # 返回所有指标
+        return {
+            'horizontal': {
+                'accuracy': hori_accuracy,
+                'precision': hori_precision,
+                'recall': hori_recall,
+                'f1_score': hori_f1,
+                'confusion_matrix': hori_cm,
+                'correct': hori_right,
+                'total': total_samples
+            },
+            'vertical': {
+                'accuracy': vert_accuracy,
+                'precision': vert_precision,
+                'recall': vert_recall,
+                'f1_score': vert_f1,
+                'confusion_matrix': vert_cm,
+                'correct': vert_right,
+                'total': total_samples
+            }
+        }
     
     
 if __name__=="__main__":
     # HORI_MODEL_NAME="model/hori_ef0.pth"
     # VERT_MODEL_NAME="model/vert_ef0.pth"
     # MODEL_NAME="model/pairwise_pretrain.pth"
-    train(100,load=LOAD)
+    # train(100,load=LOAD)
     hori_model.load_state_dict(torch.load(HORI_MODEL_NAME))
     vert_model.load_state_dict(torch.load(VERT_MODEL_NAME))
     test(hori_model,vert_model)
