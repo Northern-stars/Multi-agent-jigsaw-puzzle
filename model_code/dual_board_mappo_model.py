@@ -13,12 +13,13 @@ class PieceEncoder(nn.Module):
     def __init__(self, embed_dim: int) -> None:
         super().__init__()
         self.backbone = efficientnet_b0(weights="DEFAULT")
-        self.proj = nn.Linear(1280, embed_dim)
+        self.backbone.classifier=nn.Linear(1280,embed_dim)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        x = images.float() / 255.0
+        x = images.float()
         x = self.backbone(x)
-        return self.proj(x)
+
+        return x
 
 
 class BoardStateEncoder(nn.Module):
