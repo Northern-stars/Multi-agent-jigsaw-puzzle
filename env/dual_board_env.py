@@ -178,7 +178,7 @@ class DualBoardEnv:
 
     def _build_initial_boards(self) -> None:
         global_piece_ids = list(self.piece_records.keys())
-        random.shuffle(global_piece_ids)
+        # random.shuffle(global_piece_ids)
         self.permutation_list = [
             global_piece_ids[:8],
             global_piece_ids[8:16],
@@ -221,7 +221,7 @@ class DualBoardEnv:
         self.last_metrics = self.get_metrics()
         return self.get_observations()
 
-    def summon_permutation_list(self, swap_num: int = 0, id: Optional[Sequence[int]] = None) -> None:
+    def summon_permutation_list(self, swap_num: int = 0, id: Optional[Sequence[int]] = None) -> List[Dict[str, torch.Tensor]]:
         """Compatibility helper for the legacy training style."""
         self.reset(id_pair=id)
         for _ in range(swap_num):
@@ -232,6 +232,7 @@ class DualBoardEnv:
                 self.permutation_list[board_index][slot_a],
             )
         self.last_metrics = self.get_metrics()
+        return self.get_observations()
 
     def _apply_intra_swap(self, board_index: int, source_slot: int, target_slot: int) -> None:
         board = self.permutation_list[board_index]

@@ -72,7 +72,19 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
     absolute_record: List[float] = []
 
     for episode in range(epoch):
-        observations = env.reset()
+        if episode==0:
+            swap_num=1
+        elif episode==50:
+            swap_num=2
+        elif episode==100:
+            swap_num=3
+        elif episode==150:
+            swap_num=4
+        elif episode==200:
+            swap_num=5
+        elif episode==300:
+            swap_num=8
+        observations = env.summon_permutation_list(swap_num)
         episode_reward = 0.0
         done = False
         step = 0
