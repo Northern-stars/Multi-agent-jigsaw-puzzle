@@ -109,7 +109,7 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
         absolute_record.append(info["overall_absolute"])
 
         print(
-            f"Episode {episode + 1}/{epoch} | steps={step} | reward={episode_reward:.3f} | "
+            f"Episode {episode + 1}/{epoch} | steps={step} | reward={episode_reward/step:.3f} | "
             f"ownership={info['ownership_accuracy']:.3f} | absolute={info['overall_absolute']:.3f} | "
             f"both_perfect={info['both_perfect']:.0f} | policy_loss={update_info['policy_loss']:.4f}"
         )
