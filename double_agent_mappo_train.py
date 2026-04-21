@@ -21,8 +21,8 @@ TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 VALID_X_PATH = "dataset/valid_img_48gap_33.npy"
 VALID_Y_PATH = "dataset/valid_label_48gap_33.npy"
 
-TOTAL_EPISODES = 300
-MAX_STEP = 80
+TOTAL_EPISODES = 5000
+MAX_STEP = 200
 LOAD_MODEL = False
 SHOW_IMAGE = False
 SEED = 42
@@ -138,7 +138,7 @@ if __name__ == "__main__":
         max_grad_norm=0.5,
         ppo_epochs=4,
         mini_batch_size=16,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         intent_align_coef=0.1,
     )
     agent = DualBoardMAPPOAgent(model=model, env=env, config=config, device=DEVICE)

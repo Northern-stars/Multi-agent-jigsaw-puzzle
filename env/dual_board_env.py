@@ -17,13 +17,13 @@ SLOT_TO_GRID_POS = {slot_index: divmod(grid_index, 3) for slot_index, grid_index
 
 @dataclass
 class RewardWeights:
-    progress: float = 1.0
-    ownership: float = 0.25
-    coord_success: float = 0.5
-    coord_neutral: float = -0.1
-    coord_fail: float = 0.3
-    step_penalty: float = 0.05
-    terminal: float = 10.0
+    pairwise: float = 0.2
+    cate: float = 0.8
+    consistency: float = 0.5
+    done_reward: float = 1000.0
+    consistency_reward: float = 200.0
+    penalty: float = -0.5
+    coord_fail: float = 0.0
 
 
 @dataclass
@@ -258,6 +258,63 @@ class DualBoardEnv:
                 count += 1
         return count
 
+    def _encoded_board_permutation(self, board_index: int) -> List[int]:
+        permutation = [-1] * self.piece_num
+        for slot_index, piece_id in enumerate(self.permutation_list[board_index]):
+            piece = self.piece_records[piece_id]
+            current_grid_index = SLOT_TO_GRID_INDEX[slot_index]
+            source_grid_index = SLOT_TO_GRID_INDEX[piece.source_slot]
+            permutation[current_grid_index] = piece.source_board * self.piece_num + source_grid_index
+
+        permutation[self.piece_num // 2] = board_index * self.piece_num + self.piece_num // 2
+        return permutation
+
+    def _absolute_local_score(self, board_index: int) -> float:
+        permutation = self._encoded_board_permutation(board_index)
+        expected = list(range(board_index * self.piece_num, (board_index + 1) * self.piece_num))
+        if permutation == expected:
+            return self.reward_weights.done_reward
+
+        local_reward = 0.0
+        edge_length = int(self.piece_num**0.5)
+        hori_pairs = [(i, i + 1) for i in range(self.piece_num) if i % edge_length != edge_length - 1]
+        vert_pairs = [(i, i + edge_length) for i in range(self.piece_num - edge_length)]
+
+        for pair_index in range(len(hori_pairs)):
+            hori_pair = (permutation[hori_pairs[pair_index][0]], permutation[hori_pairs[pair_index][1]])
+            vert_pair = (permutation[vert_pairs[pair_index][0]], permutation[vert_pairs[pair_index][1]])
+
+            if (
+                -1 not in hori_pair
+                and (hori_pair[0] % self.piece_num, hori_pair[1] % self.piece_num) in hori_pairs
+                and hori_pair[0] // self.piece_num == hori_pair[1] // self.piece_num == board_index
+            ):
+                local_reward += self.reward_weights.pairwise
+            if (
+                -1 not in vert_pair
+                and (vert_pair[0] % self.piece_num, vert_pair[1] % self.piece_num) in vert_pairs
+                and vert_pair[0] // self.piece_num == vert_pair[1] // self.piece_num == board_index
+            ):
+                local_reward += self.reward_weights.pairwise
+
+        for grid_index, piece in enumerate(permutation):
+            if piece != -1 and piece % self.piece_num == grid_index and piece // self.piece_num == board_index:
+                local_reward += self.reward_weights.cate
+
+        local_reward += self.reward_weights.penalty
+        return local_reward
+
+    def _absolute_consistency_score(self, board_index: int) -> float:
+        permutation = self._encoded_board_permutation(board_index)
+        correct_board_piece_count = 0
+        for piece in permutation:
+            if piece != -1 and piece // self.piece_num == board_index:
+                correct_board_piece_count += 1
+
+        if correct_board_piece_count == self.piece_num:
+            return self.reward_weights.consistency_reward
+        return correct_board_piece_count * self.reward_weights.consistency
+
     def _pair_counts(self, board_index: int) -> Tuple[int, int]:
         board = self.permutation_list[board_index]
         hori_pairs = [(0, 1), (1, 2), (3, 4), (5, 6), (6, 7), (4, 7)]
@@ -303,49 +360,20 @@ class DualBoardEnv:
 
     def _compute_rewards(
         self,
-        prev_metrics: Dict[str, float],
-        new_metrics: Dict[str, float],
-        cross_executed: bool,
         failed_coordination: bool,
-    ) -> Tuple[List[float], float]:
-        exact_delta = (new_metrics["board_a_exact"] + new_metrics["board_b_exact"]) - (
-            prev_metrics["board_a_exact"] + prev_metrics["board_b_exact"]
-        )
-        ownership_delta = (new_metrics["board_a_ownership"] + new_metrics["board_b_ownership"]) - (
-            prev_metrics["board_a_ownership"] + prev_metrics["board_b_ownership"]
-        )
-        local_exact_delta = [
-            new_metrics["board_a_exact"] - prev_metrics["board_a_exact"],
-            new_metrics["board_b_exact"] - prev_metrics["board_b_exact"],
-        ]
-        local_owner_delta = [
-            new_metrics["board_a_ownership"] - prev_metrics["board_a_ownership"],
-            new_metrics["board_b_ownership"] - prev_metrics["board_b_ownership"],
+    ) -> Tuple[List[float], float, List[float], List[float]]:
+        local_rewards = [self._absolute_local_score(board_index) for board_index in range(2)]
+        consistency_rewards = [self._absolute_consistency_score(board_index) for board_index in range(2)]
+        rewards = [
+            local_reward + consistency_reward
+            for local_reward, consistency_reward in zip(local_rewards, consistency_rewards)
         ]
 
-        rewards = []
-        for board_index in range(2):
-            reward = (
-                self.reward_weights.progress * local_exact_delta[board_index]
-                + self.reward_weights.ownership * local_owner_delta[board_index]
-                - self.reward_weights.step_penalty
-            )
-            rewards.append(reward)
-
-        if cross_executed:
-            if exact_delta > 0 or ownership_delta > 0:
-                rewards = [reward + self.reward_weights.coord_success for reward in rewards]
-            else:
-                rewards = [reward + self.reward_weights.coord_neutral for reward in rewards]
-
-        if failed_coordination:
+        if failed_coordination and self.reward_weights.coord_fail != 0:
             rewards = [reward - self.reward_weights.coord_fail for reward in rewards]
 
-        if new_metrics["both_perfect"] > 0:
-            rewards = [reward + self.reward_weights.terminal for reward in rewards]
-
         team_reward = float(sum(rewards) / len(rewards))
-        return rewards, team_reward
+        return rewards, team_reward, local_rewards, consistency_rewards
 
     def step(
         self,
@@ -354,7 +382,6 @@ class DualBoardEnv:
         if len(actions) != 2:
             raise ValueError("DualBoardEnv.step expects two agents' actions.")
 
-        prev_metrics = copy.deepcopy(self.last_metrics)
         (source_a, target_a), (source_b, target_b) = actions
         cross_a = target_a == 8
         cross_b = target_b == 8
@@ -371,7 +398,7 @@ class DualBoardEnv:
 
         self.step_count += 1
         new_metrics = self.get_metrics()
-        rewards, team_reward = self._compute_rewards(prev_metrics, new_metrics, cross_executed, failed_coordination)
+        rewards, team_reward, local_rewards, consistency_rewards = self._compute_rewards(failed_coordination)
 
         if new_metrics["both_perfect"] > 0 and self.completion_step is None:
             self.completion_step = self.step_count
@@ -392,6 +419,10 @@ class DualBoardEnv:
                 "cross_executed": float(cross_executed),
                 "failed_coordination": float(failed_coordination),
                 "team_reward": team_reward,
+                "board_a_local_reward": local_rewards[0],
+                "board_b_local_reward": local_rewards[1],
+                "board_a_consistency_reward": consistency_rewards[0],
+                "board_b_consistency_reward": consistency_rewards[1],
                 "step_count": float(self.step_count),
             }
         )

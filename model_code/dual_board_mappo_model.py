@@ -3,6 +3,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+from torchvision.models import efficientnet_b0
 
 
 MASK_VALUE = -1e9
@@ -11,22 +12,12 @@ MASK_VALUE = -1e9
 class PieceEncoder(nn.Module):
     def __init__(self, embed_dim: int) -> None:
         super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),
-        )
-        self.proj = nn.Linear(128, embed_dim)
+        self.backbone = efficientnet_b0(weights="DEFAULT")
+        self.proj = nn.Linear(1280, embed_dim)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         x = images.float() / 255.0
-        x = self.backbone(x).flatten(1)
+        x = self.backbone(x)
         return self.proj(x)
 
 
