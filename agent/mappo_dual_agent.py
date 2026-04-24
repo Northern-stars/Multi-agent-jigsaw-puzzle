@@ -117,7 +117,7 @@ class DualBoardMAPPOAgent:
         }
 
     def _build_mixed_policy(self, logits: torch.Tensor, epsilon: float) -> torch.Tensor:
-        policy_probs = torch.softmax(logits, dim=0)
+        policy_probs = torch.softmax(logits, dim=-1)
         uniform = torch.full_like(policy_probs, 1.0 / policy_probs.numel())
         mixed_probs = (1.0 - epsilon) * policy_probs + epsilon * uniform
         return mixed_probs / mixed_probs.sum()

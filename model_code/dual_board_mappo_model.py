@@ -15,7 +15,7 @@ class PieceEncoder(nn.Module):
         self.backbone.classifier=nn.Linear(1280,embed_dim)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        x = images.float()
+        x = images.float()/255
         x = self.backbone(x)
 
         return x
