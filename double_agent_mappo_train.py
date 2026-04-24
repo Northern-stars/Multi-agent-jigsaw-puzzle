@@ -6,9 +6,10 @@ import numpy as np
 import torch
 
 from agent.mappo_dual_agent import DualBoardMAPPOAgent, MAPPOConfig
-from env.dual_board_env import DualBoardEnv
+from env.dual_board_env import DualBoardEnv,RewardWeights
 from model_code.dual_board_mappo_model import DualBoardMAPPOModel
 from utils.utils import plot_reward_curve, save_log
+
 
 
 MODEL_NAME = "dual_board_mappo"
@@ -21,12 +22,13 @@ TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 VALID_X_PATH = "dataset/valid_img_48gap_33.npy"
 VALID_Y_PATH = "dataset/valid_label_48gap_33.npy"
 
-TOTAL_EPISODES = 5000
-MAX_STEP = 200
+TOTAL_EPISODES = 20000
+MAX_STEP = 50
 LOAD_MODEL = False
 SHOW_IMAGE = False
 SEED = 42
 
+reward_weight=RewardWeights(pairwise=.2,cate=.8,consistency=.3,done_reward=100,consistency_reward=20)
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -103,7 +105,7 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
                 env.show_image()
 
         update_info = agent.update(observations, done, show=True)
-        reward_record.append([episode_reward])
+        reward_record.append([episode_reward/step])
         done_record.append(info["both_perfect"])
         ownership_record.append(info["ownership_accuracy"])
         absolute_record.append(info["overall_absolute"])
@@ -138,6 +140,7 @@ if __name__ == "__main__":
         cooldown_steps=5,
         training_mode=True,
         device=DEVICE,
+        reward_weights=reward_weight
     )
 
     model = DualBoardMAPPOModel(embed_dim=128, num_layers=3, num_heads=4, dropout=0.1).to(DEVICE)

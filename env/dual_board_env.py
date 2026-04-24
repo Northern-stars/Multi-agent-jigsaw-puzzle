@@ -312,8 +312,8 @@ class DualBoardEnv:
             if piece != -1 and piece // self.piece_num == board_index:
                 correct_board_piece_count += 1
 
-        if correct_board_piece_count == self.piece_num:
-            return self.reward_weights.consistency_reward
+        # if correct_board_piece_count == self.piece_num:
+        #     return self.reward_weights.consistency_reward
         return correct_board_piece_count * self.reward_weights.consistency
 
     def _pair_counts(self, board_index: int) -> Tuple[int, int]:
