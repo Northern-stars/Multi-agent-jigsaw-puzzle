@@ -2,7 +2,6 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-from torch.distributions import Categorical
 from torchvision.models import efficientnet_b0
 
 
@@ -122,10 +121,10 @@ class DualBoardMAPPOModel(nn.Module):
         slot_images: torch.Tensor,
         anchor_images: torch.Tensor,
         ptr1_actions: Optional[torch.Tensor] = None,
-        ptr2_actions: Optional[torch.Tensor] = None,
-        deterministic: bool = False,
+        encoded: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
-        encoded = self.encode_boards(slot_images, anchor_images)
+        if encoded is None:
+            encoded = self.encode_boards(slot_images, anchor_images)
         slot_context = encoded["slot_context"]
         board_summary = encoded["board_summary"]
 
@@ -136,13 +135,17 @@ class DualBoardMAPPOModel(nn.Module):
             ],
             dim=1,
         )
-        ptr1_dist = Categorical(logits=ptr1_logits)
+        ptr1_probs = torch.softmax(ptr1_logits, dim=-1)
+        value = self.critic(board_summary[:, 0], board_summary[:, 1])
 
+        result = {
+            "encoded": encoded,
+            "ptr1_logits": ptr1_logits,
+            "ptr1_probs": ptr1_probs,
+            "value": value,
+        }
         if ptr1_actions is None:
-            if deterministic:
-                ptr1_actions = ptr1_logits.argmax(dim=-1)
-            else:
-                ptr1_actions = ptr1_dist.sample()
+            return result
 
         selected_source = torch.gather(
             slot_context,
@@ -169,27 +172,12 @@ class DualBoardMAPPOModel(nn.Module):
             ],
             dim=1,
         )
-        ptr2_dist = Categorical(logits=ptr2_logits)
-
-        if ptr2_actions is None:
-            if deterministic:
-                ptr2_actions = ptr2_logits.argmax(dim=-1)
-            else:
-                ptr2_actions = ptr2_dist.sample()
-
-        log_prob_1 = ptr1_dist.log_prob(ptr1_actions)
-        log_prob_2 = ptr2_dist.log_prob(ptr2_actions)
-        entropy = ptr1_dist.entropy() + ptr2_dist.entropy()
-        value = self.critic(board_summary[:, 0], board_summary[:, 1])
-        outside_prob = ptr2_dist.probs[..., 8]
-
-        return {
-            "ptr1_logits": ptr1_logits,
-            "ptr2_logits": ptr2_logits,
-            "ptr1_actions": ptr1_actions,
-            "ptr2_actions": ptr2_actions,
-            "log_prob": log_prob_1 + log_prob_2,
-            "entropy": entropy,
-            "value": value,
-            "outside_prob": outside_prob,
-        }
+        ptr2_probs = torch.softmax(ptr2_logits, dim=-1)
+        result.update(
+            {
+                "ptr2_logits": ptr2_logits,
+                "ptr2_probs": ptr2_probs,
+                "outside_prob": ptr2_probs[..., 8],
+            }
+        )
+        return result

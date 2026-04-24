@@ -27,6 +27,7 @@ MAX_STEP = 50
 LOAD_MODEL = False
 SHOW_IMAGE = False
 SEED = 42
+REWARD_DIFFERENCE = False
 
 SWAP_NUM=[1,1,1,1,1]
 
@@ -66,7 +67,7 @@ def load_checkpoint(agent: DualBoardMAPPOAgent) -> None:
     agent.optimizer.load_state_dict(checkpoint["optimizer"])
 
 
-def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOTAL_EPISODES, load: bool = False) -> None:
+def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOTAL_EPISODES, load: bool = False,reward_difference=False) -> None:
     if load and os.path.exists(MODEL_PATH):
         load_checkpoint(agent)
 
@@ -93,15 +94,20 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
         done = False
         step = 0
         info = env.get_metrics()
+        last_reward=0
 
         while not done and step < MAX_STEP:
             actions, policy_info = agent.select_actions(observations, deterministic=False)
             next_observations, reward_list, done, info = env.step(actions)
             team_reward = float(sum(reward_list) / len(reward_list))
-            agent.record_transition(policy_info, reward=team_reward, done=done)
+            if reward_difference:
+                agent.record_transition(policy_info, reward=team_reward-last_reward, done=done)
+            else:
+                agent.record_transition(policy_info, reward=team_reward, done=done)
             observations = next_observations
             episode_reward += team_reward
             step += 1
+            last_reward = team_reward
 
             if SHOW_IMAGE:
                 env.show_image()
@@ -160,4 +166,4 @@ if __name__ == "__main__":
     )
     agent = DualBoardMAPPOAgent(model=model, env=env, config=config, device=DEVICE)
 
-    run_training(env, agent, epoch=TOTAL_EPISODES, load=LOAD_MODEL)
+    run_training(env, agent, epoch=TOTAL_EPISODES, load=LOAD_MODEL, reward_difference=REWARD_DIFFERENCE)

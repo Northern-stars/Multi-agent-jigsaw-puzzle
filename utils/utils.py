@@ -22,7 +22,7 @@ def plot_reward_curve(reward_record=None,done_record=None,file_name=""):
                 acc.append(done_record[i] if i==0 else (acc[i-1]*i+done_record[i])/(i+1) if i<=100 else np.mean(acc[i-99:i+1]))
         if reward_flag:
             plt.clf()
-            plt.ylim((0,1000))
+            # plt.ylim((0,1000))
             plt.plot(range(len(avg_reward)),avg_reward)
             plt.xlabel("Episode")
             plt.ylabel("Average Reward_"+file_name)
@@ -31,7 +31,7 @@ def plot_reward_curve(reward_record=None,done_record=None,file_name=""):
         
         if done_flag:
             plt.clf()
-            plt.ylim((0,1))
+            # plt.ylim((0,1))
             plt.plot(range(len(acc)),acc)
             plt.xlabel("Episode")
             plt.ylabel("Average accuracy")
