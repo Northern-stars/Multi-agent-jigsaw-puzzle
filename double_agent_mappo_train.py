@@ -28,6 +28,8 @@ LOAD_MODEL = False
 SHOW_IMAGE = False
 SEED = 42
 
+SWAP_NUM=[1,1,1,1,1]
+
 reward_weight=RewardWeights(pairwise=.2,cate=.8,consistency=.3,done_reward=100,consistency_reward=20)
 
 def set_seed(seed: int) -> None:
@@ -75,17 +77,17 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
 
     for episode in range(epoch):
         if episode==0:
-            swap_num=1
+            swap_num=SWAP_NUM[0]
         elif episode==50:
-            swap_num=2
+            swap_num=SWAP_NUM[1]
         elif episode==100:
-            swap_num=3
+            swap_num=SWAP_NUM[2]
         elif episode==150:
-            swap_num=4
+            swap_num=SWAP_NUM[3]
         elif episode==200:
-            swap_num=5
+            swap_num=SWAP_NUM[4]
         elif episode==300:
-            swap_num=8
+            swap_num=SWAP_NUM[5]
         observations = env.summon_permutation_list(swap_num)
         episode_reward = 0.0
         done = False
