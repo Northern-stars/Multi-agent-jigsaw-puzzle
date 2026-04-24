@@ -68,7 +68,7 @@ class DualBoardMAPPOAgent:
         if deterministic:
             ptr1_actions = ptr1_logits.argmax(dim=-1)
         else:
-            ptr1_actions = self._build_mixed_policy(ptr1_logits, self.config.epsilon_greedy).sample()
+            ptr1_actions = Categorical(self._build_mixed_policy(ptr1_logits, self.config.epsilon_greedy)).sample()
 
         full_output = self.model.evaluate_policy(
             slot_images=None,
@@ -82,7 +82,7 @@ class DualBoardMAPPOAgent:
         if deterministic:
             ptr2_actions = ptr2_logits.argmax(dim=-1)
         else:
-            ptr2_actions = self._build_mixed_policy(ptr2_logits, self.config.epsilon_greedy).sample()
+            ptr2_actions = Categorical(self._build_mixed_policy(ptr2_logits, self.config.epsilon_greedy)).sample()
 
         return {
             "ptr1_actions": ptr1_actions,
