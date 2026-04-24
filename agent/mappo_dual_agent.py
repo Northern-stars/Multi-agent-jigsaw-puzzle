@@ -167,8 +167,12 @@ class DualBoardMAPPOAgent:
             advantages[step] = gae
             returns[step] = advantages[step] + values[step]
             next_value = values[step]
+        std=advantages.std(unbiased=False)
+        if std > 1e-8:
 
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        else:
+            advantages = advantages - advantages.mean()
         return returns, advantages
 
     def update(self, next_observations: Sequence[Dict[str, torch.Tensor]], done: bool, show: bool = False) -> Dict[str, float]:
