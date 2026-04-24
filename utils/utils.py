@@ -13,25 +13,30 @@ import torch
 def plot_reward_curve(reward_record=None,done_record=None,file_name=""):
         avg_reward=[]
         acc=[]
-        reward_flag=not reward_record is None
-        done_flag=not done_record is None
-        for i in range(len(reward_record)):
-            if reward_flag:
-                avg_reward.append(sum(reward_record[i])/len(reward_record[i]))
-            if done_flag:
-                acc.append(done_record[i] if i==0 else (acc[i-1]*i+done_record[i])/(i+1) if i<=100 else np.mean(acc[i-99:i+1]))
+        reward_flag=reward_record is not None
+        done_flag=done_record is not None
+
+        if reward_flag:
+            episode_reward=[sum(record)/len(record) for record in reward_record if len(record)!=0]
+            for i in range(len(episode_reward)):
+                start_index=max(0,i-99)
+                avg_reward.append(float(np.mean(episode_reward[start_index:i+1])))
+
+        if done_flag:
+            for i in range(len(done_record)):
+                start_index=max(0,i-99)
+                acc.append(float(np.mean(done_record[start_index:i+1])))
+
         if reward_flag:
             plt.clf()
-            # plt.ylim((0,1000))
             plt.plot(range(len(avg_reward)),avg_reward)
             plt.xlabel("Episode")
             plt.ylabel("Average Reward_"+file_name)
-            plt.title("Reward Curve")
+            plt.title("Reward Curve (100-Episode Moving Average)")
             plt.savefig(os.path.join("result","reward"+file_name+".png"))
         
         if done_flag:
             plt.clf()
-            # plt.ylim((0,1))
             plt.plot(range(len(acc)),acc)
             plt.xlabel("Episode")
             plt.ylabel("Average accuracy")
