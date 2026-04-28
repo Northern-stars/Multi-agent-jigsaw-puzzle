@@ -27,8 +27,7 @@ class EpisodeBuffer:
         self.clear()
 
     def clear(self) -> None:
-        self.slot_images: List[torch.Tensor] = []
-        self.anchor_images: List[torch.Tensor] = []
+        self.board_images: List[torch.Tensor] = []
         self.actions: List[torch.Tensor] = []
         self.log_probs: List[torch.Tensor] = []
         self.values: List[torch.Tensor] = []
@@ -52,10 +51,8 @@ class DualBoardMAPPOAgent:
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.learning_rate, eps=1e-8)
         self.buffer = EpisodeBuffer()
 
-    def _stack_obs(self, observations: Sequence[Dict[str, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
-        slot_images = torch.stack([obs["slot_images"] for obs in observations], dim=0).unsqueeze(0).to(self.device)
-        anchor_images = torch.stack([obs["anchor_image"] for obs in observations], dim=0).unsqueeze(0).to(self.device)
-        return slot_images, anchor_images
+    def _stack_obs(self, observations: Sequence[Dict[str, torch.Tensor]]) -> torch.Tensor:
+        return torch.stack([obs["board_image"] for obs in observations], dim=0).unsqueeze(0).to(self.device)
 
     def _sample_policy(
         self,
@@ -71,8 +68,7 @@ class DualBoardMAPPOAgent:
             # ptr1_actions = Categorical(self._build_mixed_policy(ptr1_logits, self.config.epsilon_greedy)).sample()
             ptr1_actions = ptr1_dist.sample()
         full_output = self.model.evaluate_policy(
-            slot_images=None,
-            anchor_images=None,
+            board_images=None,
             ptr1_actions=ptr1_actions,
             encoded=output["encoded"],
         )
@@ -99,17 +95,16 @@ class DualBoardMAPPOAgent:
         deterministic: bool = False,
     ) -> Tuple[List[Tuple[int, int]], Dict[str, torch.Tensor]]:
         self.model.eval()
-        slot_images, anchor_images = self._stack_obs(observations)
+        board_images = self._stack_obs(observations)
         with torch.no_grad():
-            output = self.model.evaluate_policy(slot_images, anchor_images)
+            output = self.model.evaluate_policy(board_images)
             policy_sample = self._sample_policy(output, deterministic=deterministic)
 
         ptr1 = policy_sample["ptr1_actions"].squeeze(0).cpu()
         ptr2 = policy_sample["ptr2_actions"].squeeze(0).cpu()
         actions = [(int(ptr1[0].item()), int(ptr2[0].item())), (int(ptr1[1].item()), int(ptr2[1].item()))]
         return actions, {
-            "slot_images": slot_images.squeeze(0).detach().cpu().to(torch.uint8),
-            "anchor_images": anchor_images.squeeze(0).detach().cpu().to(torch.uint8),
+            "board_images": board_images.squeeze(0).detach().cpu().to(torch.uint8),
             "actions": torch.stack([ptr1, ptr2], dim=-1).to(torch.long),
             "log_prob": policy_sample["log_prob"].squeeze(0).detach().cpu(),
             "value": policy_sample["value"].squeeze(0).detach().cpu(),
@@ -128,8 +123,7 @@ class DualBoardMAPPOAgent:
         reward: float,
         done: bool,
     ) -> None:
-        self.buffer.slot_images.append(policy_info["slot_images"])
-        self.buffer.anchor_images.append(policy_info["anchor_images"])
+        self.buffer.board_images.append(policy_info["board_images"])
         self.buffer.actions.append(policy_info["actions"])
         self.buffer.log_probs.append(policy_info["log_prob"])
         self.buffer.values.append(policy_info["value"])
@@ -141,9 +135,9 @@ class DualBoardMAPPOAgent:
         if done:
             return 0.0
         self.model.eval()
-        slot_images, anchor_images = self._stack_obs(observations)
+        board_images = self._stack_obs(observations)
         with torch.no_grad():
-            value = self.model.evaluate_policy(slot_images, anchor_images)["value"]
+            value = self.model.evaluate_policy(board_images)["value"]
         return float(value.squeeze(0).item())
 
     def _compute_advantages(self, last_value: float) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -183,8 +177,7 @@ class DualBoardMAPPOAgent:
         last_value = self._compute_bootstrap_value(next_observations, done)
         returns, advantages = self._compute_advantages(last_value)
 
-        slot_images = torch.stack(self.buffer.slot_images).to(self.device)
-        anchor_images = torch.stack(self.buffer.anchor_images).to(self.device)
+        board_images = torch.stack(self.buffer.board_images).to(self.device)
         actions = torch.stack(self.buffer.actions).to(self.device)
         old_log_probs = torch.stack(self.buffer.log_probs).to(self.device).sum(dim=-1)
         returns = returns.to(self.device)
@@ -199,15 +192,13 @@ class DualBoardMAPPOAgent:
                 batch_indices = indices[start : start + self.config.mini_batch_size]
                 batch_indices_t = torch.tensor(batch_indices, dtype=torch.long, device=self.device)
 
-                batch_slot = slot_images[batch_indices_t]
-                batch_anchor = anchor_images[batch_indices_t]
+                batch_board = board_images[batch_indices_t]
                 batch_actions = actions[batch_indices_t]
                 batch_ptr1 = batch_actions[:, :, 0]
                 batch_ptr2 = batch_actions[:, :, 1]
 
                 output = self.model.evaluate_policy(
-                    batch_slot,
-                    batch_anchor,
+                    batch_board,
                     ptr1_actions=batch_ptr1,
                 )
                 ptr1_dist = Categorical(logits=output["ptr1_logits"])

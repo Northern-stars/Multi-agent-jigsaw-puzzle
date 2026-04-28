@@ -200,13 +200,8 @@ class DualBoardEnv:
         return image
 
     def _build_observation(self, board_index: int) -> Dict[str, torch.Tensor]:
-        board_pieces = self.permutation_list[board_index]
-        slot_images = torch.stack([self._get_slot_tensor(piece_id) for piece_id in board_pieces], dim=0)
         return {
-            "slot_images": slot_images.clone(),
-            "anchor_image": self.anchor_pieces[board_index].clone(),
             "board_image": self._build_board_image(board_index),
-            "piece_ids": torch.tensor(board_pieces, dtype=torch.long),
         }
 
     def get_observations(self) -> List[Dict[str, torch.Tensor]]:

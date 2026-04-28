@@ -3,46 +3,12 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torchvision.models import efficientnet_b0
-
+import sys
+sys.path.append("..")
+sys.path.append(".")
+from model_code.fen_model import attention_fen_model as fen_model
 
 MASK_VALUE = -1e9
-
-
-class PieceEncoder(nn.Module):
-    def __init__(self, embed_dim: int) -> None:
-        super().__init__()
-        self.backbone = efficientnet_b0(weights="DEFAULT")
-        self.backbone.classifier=nn.Linear(1280,embed_dim)
-
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        x = images.float()/255
-        x = self.backbone(x)
-
-        return x
-
-
-class BoardStateEncoder(nn.Module):
-    def __init__(self, embed_dim: int, num_layers: int = 3, num_heads: int = 4, dropout: float = 0.1) -> None:
-        super().__init__()
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=embed_dim * 2,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.position_embedding = nn.Parameter(torch.randn(1, 9, embed_dim) * 0.02)
-        self.summary_norm = nn.LayerNorm(embed_dim)
-
-    def forward(self, slot_tokens: torch.Tensor, anchor_token: torch.Tensor) -> Dict[str, torch.Tensor]:
-        tokens = torch.cat([slot_tokens[:, :4], anchor_token.unsqueeze(1), slot_tokens[:, 4:]], dim=1)
-        encoded = self.transformer(tokens + self.position_embedding)
-        slot_context = torch.cat([encoded[:, :4], encoded[:, 5:]], dim=1)
-        board_summary = self.summary_norm(encoded.mean(dim=1))
-        return {"slot_context": slot_context, "board_summary": board_summary}
-
 
 class PointerActor(nn.Module):
     def __init__(self, embed_dim: int) -> None:
@@ -97,34 +63,30 @@ class CentralizedCritic(nn.Module):
 class DualBoardMAPPOModel(nn.Module):
     def __init__(self, embed_dim: int = 128, num_layers: int = 3, num_heads: int = 4, dropout: float = 0.1) -> None:
         super().__init__()
-        self.piece_encoder = PieceEncoder(embed_dim)
-        self.board_encoder = BoardStateEncoder(embed_dim, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
+        self.board_fen = fen_model(embed_dim, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
         self.actor = PointerActor(embed_dim)
         self.critic = CentralizedCritic(embed_dim)
 
-    def encode_boards(self, slot_images: torch.Tensor, anchor_images: torch.Tensor) -> Dict[str, torch.Tensor]:
-        batch_size = slot_images.size(0)
-        slot_embeddings = self.piece_encoder(slot_images.view(batch_size * 2 * 8, 3, 96, 96)).view(batch_size, 2, 8, -1)
-        anchor_embeddings = self.piece_encoder(anchor_images.view(batch_size * 2, 3, 96, 96)).view(batch_size, 2, -1)
-
-        board_outputs = []
-        for board_index in range(2):
-            board_outputs.append(self.board_encoder(slot_embeddings[:, board_index], anchor_embeddings[:, board_index]))
-
+    def encode_boards(self, board_images: torch.Tensor) -> Dict[str, torch.Tensor]:
+        batch_size = board_images.size(0)
+        flat_board_images = board_images.view(batch_size * 2, 3, 288, 288)
+        encoded_boards = self.board_fen(flat_board_images)
         return {
-            "slot_context": torch.stack([board_outputs[0]["slot_context"], board_outputs[1]["slot_context"]], dim=1),
-            "board_summary": torch.stack([board_outputs[0]["board_summary"], board_outputs[1]["board_summary"]], dim=1),
+            "token_context": encoded_boards["token_context"].view(batch_size, 2, 9, -1),
+            "slot_context": encoded_boards["slot_context"].view(batch_size, 2, 8, -1),
+            "board_summary": encoded_boards["board_summary"].view(batch_size, 2, -1),
         }
 
     def evaluate_policy(
         self,
-        slot_images: torch.Tensor,
-        anchor_images: torch.Tensor,
+        board_images: Optional[torch.Tensor],
         ptr1_actions: Optional[torch.Tensor] = None,
         encoded: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         if encoded is None:
-            encoded = self.encode_boards(slot_images, anchor_images)
+            if board_images is None:
+                raise ValueError("board_images must be provided when encoded features are not supplied.")
+            encoded = self.encode_boards(board_images)
         slot_context = encoded["slot_context"]
         board_summary = encoded["board_summary"]
 

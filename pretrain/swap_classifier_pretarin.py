@@ -18,6 +18,7 @@ sys.path.append("..")
 
 import model_code.Vit as Vit
 from model_code.fen_model import fen_model
+from model_code.fen_model import attention_fen_model
 
 
 
@@ -26,7 +27,7 @@ TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 TEST_X_PATH = "dataset/test_img_48gap_33.npy"
 TEST_Y_PATH = "dataset/test_label_48gap_33.npy"
 
-MODEL_NAME = "ef"
+MODEL_NAME = "attn_fen"
 MODEL_PATH = os.path.join("model", f"swap_classifier_pretrain_{MODEL_NAME}.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -178,6 +179,17 @@ class PuzzleTypeClassifier(nn.Module):
                 output_channel=3,
             )
             feature_dim = hidden_size
+        elif model_name == "attn_fen":
+            self.backbone = attention_fen_model(
+                embed_dim=256,
+                num_heads=4,
+                num_layers=5,
+                dropout=dropout,
+                single_output=True,
+                project_hidden=hidden_size
+                )
+            
+            feature_dim = hidden_size
         else:
             raise ValueError(f"Unsupported model_name: {model_name}")
 
@@ -186,7 +198,7 @@ class PuzzleTypeClassifier(nn.Module):
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size, 3),
+            nn.Linear(hidden_size, 3)
         )
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:

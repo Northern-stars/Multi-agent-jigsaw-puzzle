@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 from torchvision.models import efficientnet_b0,efficientnet_b3,efficientnet_v2_m
 import torch.nn.functional as F
+from typing import Dict
 
 class fen_model(nn.Module):
     def __init__(self, hidden_size1, hidden_size2,feature_hidden=512,model_name="ef"):
@@ -276,3 +277,51 @@ class Modulator(nn.Module):
 
 
         return fused_channel_attention
+    
+class attention_fen_model(nn.Module):
+    def __init__(self, embed_dim: int, num_layers: int = 3, num_heads: int = 4, dropout: float = 0.1,single_output=False, project_hidden: int = 256) -> None:
+        super().__init__()
+        self.patch_encoder = efficientnet_b0(weights="DEFAULT")
+        self.patch_encoder.classifier = nn.Linear(1280, embed_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 2,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.position_embedding = nn.Parameter(torch.randn(1, 9, embed_dim) * 0.02)
+        self.summary_norm = nn.LayerNorm(embed_dim)
+        self.single_output=single_output
+        self.project_hidden=project_hidden
+        if single_output:
+            self.output_layer=nn.Sequential(
+                nn.Linear(embed_dim, project_hidden*2),
+                nn.ReLU(),
+                nn.Linear(project_hidden*2, project_hidden)
+            )
+
+    def _encode_patches(self, patches: torch.Tensor) -> torch.Tensor:
+        normalized = patches.float() / 255.0
+        return self.patch_encoder(normalized)
+
+    def forward(self, board_images: torch.Tensor) -> Dict[str, torch.Tensor]:
+        batch_size, channels, _, _ = board_images.shape
+        patches = board_images.unfold(2, 96, 96).unfold(3, 96, 96)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous().view(batch_size * 9, channels, 96, 96)
+        patch_embeddings = self._encode_patches(patches).view(batch_size, 9, -1)
+        encoded = self.transformer(patch_embeddings + self.position_embedding)
+        slot_context = torch.cat([encoded[:, :4], encoded[:, 5:]], dim=1)
+        board_summary = self.summary_norm(encoded.mean(dim=1))
+        if self.single_output:
+            b=board_summary.size(0)
+            board_summary = self.output_layer(board_summary)
+            return board_summary.view(b,-1)
+        else:
+            return {
+                "token_context": encoded,
+                "slot_context": slot_context,
+                "board_summary": board_summary,
+            }
