@@ -4,6 +4,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributions import Categorical
 
 
 @dataclass
@@ -18,6 +19,7 @@ class MAPPOConfig:
     mini_batch_size: int = 16
     learning_rate: float = 3e-4
     intent_align_coef: float = 0.1
+    epsilon_greedy: float = 0.1
 
 
 class EpisodeBuffer:
@@ -55,6 +57,42 @@ class DualBoardMAPPOAgent:
         anchor_images = torch.stack([obs["anchor_image"] for obs in observations], dim=0).unsqueeze(0).to(self.device)
         return slot_images, anchor_images
 
+    def _sample_policy(
+        self,
+        output: Dict[str, torch.Tensor],
+        deterministic: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        ptr1_logits = output["ptr1_logits"]
+        ptr1_dist = Categorical(logits=ptr1_logits)
+
+        if deterministic:
+            ptr1_actions = ptr1_logits.argmax(dim=-1)
+        else:
+            # ptr1_actions = Categorical(self._build_mixed_policy(ptr1_logits, self.config.epsilon_greedy)).sample()
+            ptr1_actions = ptr1_dist.sample()
+        full_output = self.model.evaluate_policy(
+            slot_images=None,
+            anchor_images=None,
+            ptr1_actions=ptr1_actions,
+            encoded=output["encoded"],
+        )
+        ptr2_logits = full_output["ptr2_logits"]
+        ptr2_dist = Categorical(logits=ptr2_logits)
+
+        if deterministic:
+            ptr2_actions = ptr2_logits.argmax(dim=-1)
+        else:
+            # ptr2_actions = Categorical(self._build_mixed_policy(ptr2_logits, self.config.epsilon_greedy)).sample()
+            ptr2_actions = ptr2_dist.sample()
+        return {
+            "ptr1_actions": ptr1_actions,
+            "ptr2_actions": ptr2_actions,
+            "log_prob": ptr1_dist.log_prob(ptr1_actions) + ptr2_dist.log_prob(ptr2_actions),
+            "entropy": ptr1_dist.entropy() + ptr2_dist.entropy(),
+            "value": output["value"],
+            "outside_prob": full_output["outside_prob"],
+        }
+
     def select_actions(
         self,
         observations: Sequence[Dict[str, torch.Tensor]],
@@ -63,19 +101,26 @@ class DualBoardMAPPOAgent:
         self.model.eval()
         slot_images, anchor_images = self._stack_obs(observations)
         with torch.no_grad():
-            output = self.model.evaluate_policy(slot_images, anchor_images, deterministic=deterministic)
+            output = self.model.evaluate_policy(slot_images, anchor_images)
+            policy_sample = self._sample_policy(output, deterministic=deterministic)
 
-        ptr1 = output["ptr1_actions"].squeeze(0).cpu()
-        ptr2 = output["ptr2_actions"].squeeze(0).cpu()
+        ptr1 = policy_sample["ptr1_actions"].squeeze(0).cpu()
+        ptr2 = policy_sample["ptr2_actions"].squeeze(0).cpu()
         actions = [(int(ptr1[0].item()), int(ptr2[0].item())), (int(ptr1[1].item()), int(ptr2[1].item()))]
         return actions, {
             "slot_images": slot_images.squeeze(0).detach().cpu().to(torch.uint8),
             "anchor_images": anchor_images.squeeze(0).detach().cpu().to(torch.uint8),
             "actions": torch.stack([ptr1, ptr2], dim=-1).to(torch.long),
-            "log_prob": output["log_prob"].squeeze(0).detach().cpu(),
-            "value": output["value"].squeeze(0).detach().cpu(),
-            "outside_prob": output["outside_prob"].squeeze(0).detach().cpu(),
+            "log_prob": policy_sample["log_prob"].squeeze(0).detach().cpu(),
+            "value": policy_sample["value"].squeeze(0).detach().cpu(),
+            "outside_prob": policy_sample["outside_prob"].squeeze(0).detach().cpu(),
         }
+
+    def _build_mixed_policy(self, logits: torch.Tensor, epsilon: float) -> torch.Tensor:
+        policy_probs = torch.softmax(logits, dim=-1)
+        uniform = torch.full_like(policy_probs, 1.0 / policy_probs.numel())
+        mixed_probs = (1.0 - epsilon) * policy_probs + epsilon * uniform
+        return mixed_probs / mixed_probs.sum()
 
     def record_transition(
         self,
@@ -98,7 +143,7 @@ class DualBoardMAPPOAgent:
         self.model.eval()
         slot_images, anchor_images = self._stack_obs(observations)
         with torch.no_grad():
-            value = self.model.evaluate_policy(slot_images, anchor_images, deterministic=True)["value"]
+            value = self.model.evaluate_policy(slot_images, anchor_images)["value"]
         return float(value.squeeze(0).item())
 
     def _compute_advantages(self, last_value: float) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -122,8 +167,12 @@ class DualBoardMAPPOAgent:
             advantages[step] = gae
             returns[step] = advantages[step] + values[step]
             next_value = values[step]
+        std=advantages.std(unbiased=False)
+        if std > 1e-8:
 
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        else:
+            advantages = advantages - advantages.mean()
         return returns, advantages
 
     def update(self, next_observations: Sequence[Dict[str, torch.Tensor]], done: bool, show: bool = False) -> Dict[str, float]:
@@ -160,11 +209,18 @@ class DualBoardMAPPOAgent:
                     batch_slot,
                     batch_anchor,
                     ptr1_actions=batch_ptr1,
-                    ptr2_actions=batch_ptr2,
                 )
+                ptr1_dist = Categorical(logits=output["ptr1_logits"])
+                ptr1_log_prob = ptr1_dist.log_prob(batch_ptr1)
+                ptr1_entropy = ptr1_dist.entropy()
 
-                new_log_prob = output["log_prob"].sum(dim=-1)
-                entropy = output["entropy"].mean()
+                ptr2_logits = output["ptr2_logits"]
+                ptr2_dist = Categorical(logits=ptr2_logits)
+                ptr2_log_prob = ptr2_dist.log_prob(batch_ptr2)
+                ptr2_entropy = ptr2_dist.entropy()
+
+                new_log_prob = (ptr1_log_prob + ptr2_log_prob).sum(dim=-1)
+                entropy = (ptr1_entropy + ptr2_entropy).mean()
                 value = output["value"]
 
                 ratio = torch.exp(new_log_prob - old_log_probs[batch_indices_t])

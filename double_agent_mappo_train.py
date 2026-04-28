@@ -6,9 +6,10 @@ import numpy as np
 import torch
 
 from agent.mappo_dual_agent import DualBoardMAPPOAgent, MAPPOConfig
-from env.dual_board_env import DualBoardEnv
+from env.dual_board_env import DualBoardEnv,RewardWeights
 from model_code.dual_board_mappo_model import DualBoardMAPPOModel
 from utils.utils import plot_reward_curve, save_log
+
 
 
 MODEL_NAME = "dual_board_mappo"
@@ -21,12 +22,16 @@ TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 VALID_X_PATH = "dataset/valid_img_48gap_33.npy"
 VALID_Y_PATH = "dataset/valid_label_48gap_33.npy"
 
-TOTAL_EPISODES = 300
-MAX_STEP = 80
+TOTAL_EPISODES = 20000
+MAX_STEP = 50
 LOAD_MODEL = False
 SHOW_IMAGE = False
 SEED = 42
+REWARD_DIFFERENCE = False
 
+SWAP_NUM=[1,1,1,1,1]
+
+reward_weight=RewardWeights(pairwise=.2,cate=.8,consistency=.3,done_reward=100,consistency_reward=20)
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -62,7 +67,7 @@ def load_checkpoint(agent: DualBoardMAPPOAgent) -> None:
     agent.optimizer.load_state_dict(checkpoint["optimizer"])
 
 
-def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOTAL_EPISODES, load: bool = False) -> None:
+def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOTAL_EPISODES, load: bool = False,reward_difference=False) -> None:
     if load and os.path.exists(MODEL_PATH):
         load_checkpoint(agent)
 
@@ -72,32 +77,49 @@ def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOT
     absolute_record: List[float] = []
 
     for episode in range(epoch):
-        observations = env.reset()
+        if episode==0:
+            swap_num=SWAP_NUM[0]
+        elif episode==50:
+            swap_num=SWAP_NUM[1]
+        elif episode==100:
+            swap_num=SWAP_NUM[2]
+        elif episode==150:
+            swap_num=SWAP_NUM[3]
+        elif episode==200:
+            swap_num=SWAP_NUM[4]
+        elif episode==300:
+            swap_num=SWAP_NUM[5]
+        observations = env.summon_permutation_list(swap_num)
         episode_reward = 0.0
         done = False
         step = 0
         info = env.get_metrics()
+        last_reward=0
 
         while not done and step < MAX_STEP:
             actions, policy_info = agent.select_actions(observations, deterministic=False)
             next_observations, reward_list, done, info = env.step(actions)
             team_reward = float(sum(reward_list) / len(reward_list))
-            agent.record_transition(policy_info, reward=team_reward, done=done)
+            if reward_difference:
+                agent.record_transition(policy_info, reward=team_reward-last_reward, done=done)
+            else:
+                agent.record_transition(policy_info, reward=team_reward, done=done)
             observations = next_observations
             episode_reward += team_reward
             step += 1
+            last_reward = team_reward
 
             if SHOW_IMAGE:
                 env.show_image()
 
         update_info = agent.update(observations, done, show=True)
-        reward_record.append([episode_reward])
+        reward_record.append([episode_reward/step])
         done_record.append(info["both_perfect"])
         ownership_record.append(info["ownership_accuracy"])
         absolute_record.append(info["overall_absolute"])
 
         print(
-            f"Episode {episode + 1}/{epoch} | steps={step} | reward={episode_reward:.3f} | "
+            f"Episode {episode + 1}/{epoch} | steps={step} | reward={episode_reward/step:.3f} | "
             f"ownership={info['ownership_accuracy']:.3f} | absolute={info['overall_absolute']:.3f} | "
             f"both_perfect={info['both_perfect']:.0f} | policy_loss={update_info['policy_loss']:.4f}"
         )
@@ -126,6 +148,7 @@ if __name__ == "__main__":
         cooldown_steps=5,
         training_mode=True,
         device=DEVICE,
+        reward_weights=reward_weight
     )
 
     model = DualBoardMAPPOModel(embed_dim=128, num_layers=3, num_heads=4, dropout=0.1).to(DEVICE)
@@ -138,9 +161,9 @@ if __name__ == "__main__":
         max_grad_norm=0.5,
         ppo_epochs=4,
         mini_batch_size=16,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         intent_align_coef=0.1,
     )
     agent = DualBoardMAPPOAgent(model=model, env=env, config=config, device=DEVICE)
 
-    run_training(env, agent, epoch=TOTAL_EPISODES, load=LOAD_MODEL)
+    run_training(env, agent, epoch=TOTAL_EPISODES, load=LOAD_MODEL, reward_difference=REWARD_DIFFERENCE)
