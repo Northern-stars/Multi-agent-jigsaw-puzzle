@@ -55,7 +55,7 @@ class imageData(Dataset):
         return len(self.data)
     def __getitem__(self, index):
         
-        image=torch.tensor(self.data[index]).permute([2,0,1]).to(torch.float)
+        image=torch.from_numpy(self.data[index]).permute([2,0,1]).to(torch.float)
         
         image_fragments=[
             image[:,0:96,0:96],

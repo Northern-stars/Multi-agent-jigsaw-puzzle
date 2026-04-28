@@ -116,7 +116,35 @@ class PositionalEmbedding(nn.Module):
             x[:,self.length*i:self.length*(i+1),:]+=i+self.position_embedding_code
         # x=x+self.position_embedding_code
         return x
+class RotationalPositionalEmbedding(nn.Module):
+    def __init__(self, d_model, num_patches):
+        super(RotationalPositionalEmbedding, self).__init__()
+        self.d_model = d_model
+        self.num_patches = num_patches
 
+    def forward(self, x):
+        seq_len = x.size(1)
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(x.size(0), -1)
+        
+        # Split into even and odd dimensions
+        x_even = x[..., 0::2]
+        x_odd = x[..., 1::2]
+        
+        # Compute sin and cos
+        div_term = torch.exp(torch.arange(0, self.d_model, 2, device=x.device) * (-math.log(10000.0) / self.d_model))
+        sin = torch.sin(positions.unsqueeze(-1) * div_term)
+        cos = torch.cos(positions.unsqueeze(-1) * div_term)
+        
+        # Rotate
+        x_rotated_even = x_even * cos - x_odd * sin
+        x_rotated_odd = x_even * sin + x_odd * cos
+        
+        # Concat back
+        x_rotated = torch.zeros_like(x)
+        x_rotated[..., 0::2] = x_rotated_even
+        x_rotated[..., 1::2] = x_rotated_odd
+        
+        return x_rotated
 class PictureEmbedding(nn.Module):
     def __init__(self,picture_size,patch_size):
         super(PictureEmbedding,self).__init__()
@@ -143,12 +171,12 @@ class PictureEncoding(nn.Module):
     def __init__(self,picture_size,channel,patch_size,drop_prob):
         super(PictureEncoding,self).__init__()
         self.tok_emb=PictureEmbedding(picture_size,patch_size)
-        self.pos_emb=PositionalEmbedding(d_model=channel*(patch_size**2),num_patches=picture_size[2]*picture_size[3]//(patch_size**2))
+        # self.pos_emb=PositionalEmbedding(d_model=channel*(patch_size**2),num_patches=picture_size[2]*picture_size[3]//(patch_size**2))
+        self.pos_emb=RotationalPositionalEmbedding(d_model=channel*(patch_size**2),num_patches=picture_size[2]*picture_size[3]//(patch_size**2))
         self.drop_out=nn.Dropout(p=drop_prob)
         self.patch_size=patch_size
     def forward(self,x):
-        with torch.no_grad():#changed
-            batch_size,width,height,channel=x.size()
+        with torch.no_grad():
             x=self.tok_emb(x)
             out=self.pos_emb(x)
         return out
@@ -290,7 +318,7 @@ if __name__=="__main__":
         n_head=4,
         encoder_layer_num=2,
         unet_hidden=1024,
-        output_channel=6
+        output_channel=3
     ).to(DEVICE)
     optimizer=torch.optim.Adam(model.parameters(),lr=1e-3,eps=1e-8)
     answer=model(tensor)
