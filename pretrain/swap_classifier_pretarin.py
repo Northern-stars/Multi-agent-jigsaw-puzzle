@@ -27,7 +27,7 @@ TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 TEST_X_PATH = "dataset/test_img_48gap_33.npy"
 TEST_Y_PATH = "dataset/test_label_48gap_33.npy"
 
-MODEL_NAME = "attn_fen"
+MODEL_NAME = "vit"
 MODEL_PATH = os.path.join("model", f"swap_classifier_pretrain_{MODEL_NAME}.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -35,8 +35,8 @@ BATCH_SIZE = 25
 LEARNING_RATE = 1e-4
 EPOCHS = 50
 NUM_WORKERS = 0
-LOAD_MODEL = False
-TEST_ONLY = False
+LOAD_MODEL = True
+TEST_ONLY = True
 
 CLASS_NAMES = ["ordered", "inner_swap", "outer_replace"]
 MOVABLE_INDICES = [0, 1, 2, 3, 5, 6, 7, 8]
