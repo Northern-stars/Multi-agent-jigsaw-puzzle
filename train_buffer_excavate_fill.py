@@ -18,9 +18,11 @@ TRAIN_X_PATH = "dataset/train_img_48gap_33-001.npy"
 TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
 MODEL_DIR = "model"
 MODEL_BACKBONE = "modulator"
+BACKBONE_FREEZE = False
 TOTAL_EPISODES = 100
-SHOW_IMAGE = False
-LOAD_MODEL = False
+MAX_ROUNDS_PER_EPISODE = 50
+SHOW_IMAGE = True
+LOAD_MODEL = True
 DIGGER_MODEL_PATH = os.path.join(MODEL_DIR, f"buffer_excavate_digger_{MODEL_BACKBONE}.pth")
 FILLER_MODEL_PATH = os.path.join(MODEL_DIR, f"buffer_excavate_filler_{MODEL_BACKBONE}.pth")
 
@@ -50,8 +52,8 @@ def build_env(train_x: np.ndarray, train_y: np.ndarray) -> BufferExcavateFillEnv
 
 
 def build_agents(env: BufferExcavateFillEnv):
-    digger_model = DiggerModel(model_name=MODEL_BACKBONE).to(DEVICE)
-    filler_model = FillerModel(model_name=MODEL_BACKBONE).to(DEVICE)
+    digger_model = DiggerModel(model_name=MODEL_BACKBONE, freeze_backbone=BACKBONE_FREEZE).to(DEVICE)
+    filler_model = FillerModel(model_name=MODEL_BACKBONE, freeze_backbone=BACKBONE_FREEZE).to(DEVICE)
     digger_agent = DiggerAgent(digger_model, device=DEVICE)
     filler_agent = FillerAgent(filler_model, device=DEVICE)
     if LOAD_MODEL:
@@ -62,39 +64,60 @@ def build_agents(env: BufferExcavateFillEnv):
     return digger_agent, filler_agent
 
 
-def run_episode(env: BufferExcavateFillEnv, digger: DiggerAgent, filler: FillerAgent, epoch: int) -> float:
+def run_episode(
+    env: BufferExcavateFillEnv,
+    digger: DiggerAgent,
+    filler: FillerAgent,
+    epoch: int,
+    max_rounds: int = MAX_ROUNDS_PER_EPISODE,
+) -> float:
     env.reset()
     digger.clean_memory()
     filler.clean_memory()
-
-    for board_id in range(env.image_num):
-        for _ in range(env.dig_per_board):
-            observation = env.get_digger_observation(board_id)
-            action, _ = digger.choose_action(observation)
-            next_obs, reward, done, info = env.step_digger(board_id, action)
-            digger.recording_memory(observation, action, reward, done)
-            if SHOW_IMAGE:
-                env.show_image()
-
-    total_fill_reward = 0.0
-    while env.stage == "filler":
-        candidates = env.get_filler_candidates()
-        if not candidates:
+    terminated_by_max_rounds = True
+    rounds_played = 0
+    for step in range(max_rounds):
+        rounds_played = step + 1
+        if env.stage == "done":
+            terminated_by_max_rounds = False
             break
-        candidate_index, _ = filler.choose_candidate(candidates)
-        candidate = candidates[candidate_index]
-        _, reward, done, info = env.step_filler(candidate_index)
-        filler.recording_memory(candidate, reward)
-        total_fill_reward += reward
-        if done:
+
+        for board_id in range(env.image_num):
+            while env.can_digger_act(board_id):
+                observation = env.get_digger_observation(board_id)
+                action, _ = digger.choose_action(observation)
+                _, reward, done, info = env.step_digger(board_id, action)
+                digger.recording_memory(observation, action, reward, done)
+                if SHOW_IMAGE:
+                    env.show_image()
+                if env.stage != "digger":
+                    break
+
+        while env.stage == "filler":
+            candidates = env.get_filler_candidates()
+            if not candidates:
+                break
+            candidate_index, _ = filler.choose_candidate(candidates)
+            candidate = candidates[candidate_index]
+            _, reward, done, info = env.step_filler(candidate_index)
+            filler.recording_memory(candidate, reward)
+            if done:
+                break
+
+        if env.stage == "done" and env.begin_digger_round():
+            continue
+        if env.stage == "done":
+            terminated_by_max_rounds = False
             break
 
     digger_loss = digger.update(train_epochs=1, show=False)
     filler_loss = filler.update(train_epochs=1, show=False)
     metrics = env.get_metrics()
+    terminate_reason = "max_rounds" if terminated_by_max_rounds else "digger_stop"
     print(
         f"Episode {epoch + 1} | score={metrics['score']:.3f} | done={metrics['done_accuracy']:.3f} | "
-        f"digger_reward={metrics['digger_reward']:.3f} | filler_reward={metrics['filler_reward']:.3f}"
+        f"digger_reward={metrics['digger_reward']:.3f} | filler_reward={metrics['filler_reward']:.3f} | "
+        f"rounds={rounds_played} | terminate={terminate_reason}"
     )
     return metrics["score"]
 

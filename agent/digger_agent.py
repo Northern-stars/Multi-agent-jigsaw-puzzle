@@ -32,7 +32,8 @@ class DiggerAgent:
         self.epsilon_min = epsilon_min
         self.epsilon_gamma = epsilon_gamma
         self.device = device
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
+        trainable_params = [parameter for parameter in self.model.parameters() if parameter.requires_grad]
+        self.optimizer = torch.optim.Adam(trainable_params, lr=lr, eps=1e-8)
         self.memory: List[Dict[str, object]] = []
         self.memory_counter = 0
 

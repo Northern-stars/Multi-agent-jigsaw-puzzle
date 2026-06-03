@@ -77,6 +77,8 @@ class BufferExcavateFillEnv:
         self.buffer: List[Dict[str, object]] = []
         self.digger_rewards: List[float] = []
         self.filler_rewards: List[float] = []
+        self.round_dig_counts: List[int] = []
+        self.round_dig_targets: List[int] = []
         self.stage = "init"
 
         self._piece_cache: Dict[int, torch.Tensor] = {}
@@ -173,8 +175,10 @@ class BufferExcavateFillEnv:
         self.buffer = []
         self.digger_rewards = []
         self.filler_rewards = []
-        self.stage = "digger"
+        self.round_dig_counts = [0 for _ in range(self.image_num)]
+        self.round_dig_targets = [0 for _ in range(self.image_num)]
         self._last_candidates = []
+        self.begin_digger_round()
         return self.get_state()
 
     def get_state(self) -> Dict[str, object]:
@@ -183,6 +187,8 @@ class BufferExcavateFillEnv:
             "boards": copy.deepcopy(self.boards),
             "empty_masks": copy.deepcopy(self.empty_masks),
             "buffer": copy.deepcopy(self.buffer),
+            "round_dig_counts": copy.deepcopy(self.round_dig_counts),
+            "round_dig_targets": copy.deepcopy(self.round_dig_targets),
             "stage": self.stage,
         }
 
@@ -213,6 +219,47 @@ class BufferExcavateFillEnv:
         valid = [not is_empty for is_empty in self.empty_masks[board_id]]
         return torch.tensor(valid, dtype=torch.bool, device=self.device)
 
+    def get_misplaced_slots(self, board_id: int) -> List[int]:
+        misplaced_slots = []
+        for slot_id, piece_id in enumerate(self.boards[board_id]):
+            if piece_id == -1:
+                continue
+            if not self._piece_correct_at(piece_id, board_id, slot_id):
+                misplaced_slots.append(slot_id)
+        return misplaced_slots
+
+    def has_misplaced_pieces(self) -> bool:
+        return any(self.get_misplaced_slots(board_id) for board_id in range(self.image_num))
+
+    def begin_digger_round(self) -> bool:
+        if self.buffer:
+            raise RuntimeError("Cannot start a new digger round while the shared buffer is not empty.")
+        self.round_dig_counts = [0 for _ in range(self.image_num)]
+        self.round_dig_targets = [
+            min(self.dig_per_board, len(self.get_misplaced_slots(board_id)))
+            for board_id in range(self.image_num)
+        ]
+        self._last_candidates = []
+        if sum(self.round_dig_targets) == 0:
+            self.stage = "done"
+            return False
+        self.stage = "digger"
+        return True
+
+    def can_digger_act(self, board_id: int) -> bool:
+        if self.stage != "digger":
+            return False
+        if board_id < 0 or board_id >= self.image_num:
+            return False
+        if self.round_dig_counts[board_id] >= self.round_dig_targets[board_id]:
+            return False
+        return any(piece_id != -1 for piece_id in self.boards[board_id])
+
+    def _digger_round_complete(self) -> bool:
+        if sum(self.round_dig_counts) >= sum(self.round_dig_targets):
+            return True
+        return not any(self.can_digger_act(board_id) for board_id in range(self.image_num))
+
     def _piece_correct_at(self, piece_id: int, board_id: int, slot_id: int) -> bool:
         gt_board = piece_id // self.piece_num
         gt_grid = piece_id % self.piece_num
@@ -220,8 +267,10 @@ class BufferExcavateFillEnv:
         return gt_board == board_id and gt_slot == slot_id
 
     def step_digger(self, board_id: int, slot_id: int) -> Tuple[Dict[str, object], float, bool, Dict[str, object]]:
-        if self.stage not in {"digger", "init"}:
+        if self.stage != "digger":
             raise RuntimeError("Digger can only act before the filler stage starts.")
+        if not self.can_digger_act(board_id):
+            raise RuntimeError(f"Board {board_id} has no remaining digger action quota in this round.")
         if slot_id < 0 or slot_id >= self.piece_num - 1:
             raise ValueError(f"slot_id must be in [0, {self.piece_num - 2}].")
         if self.empty_masks[board_id][slot_id]:
@@ -251,14 +300,17 @@ class BufferExcavateFillEnv:
             }
         )
         self.digger_rewards.append(float(reward))
+        self.round_dig_counts[board_id] += 1
 
-        digger_done = len(self.buffer) >= self.buffer_size
+        digger_done = self._digger_round_complete()
         if digger_done:
             self.stage = "filler"
         info = {
             "piece_id": int(piece_id),
             "is_correct_removed": bool(is_correct),
             "buffer_size": len(self.buffer),
+            "round_dig_count": int(self.round_dig_counts[board_id]),
+            "round_dig_target": int(self.round_dig_targets[board_id]),
             "digger_done": digger_done,
         }
         return self.get_digger_observation(board_id), float(reward), digger_done, info

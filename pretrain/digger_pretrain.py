@@ -6,6 +6,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+import sys
+sys.path.append(".")
 
 from model_code.digger_model import DiggerModel
 
@@ -75,6 +77,7 @@ def train_digger_pretrain(
     train_x: np.ndarray,
     train_y: np.ndarray,
     model_name: str = "modulator",
+    backbone_freeze: bool = False,
     epochs: int = 5,
     batch_size: int = 16,
     lr: float = 1e-4,
@@ -83,11 +86,13 @@ def train_digger_pretrain(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dataset = DiggerPretrainDataset(train_x, train_y)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-    model = DiggerModel(model_name=model_name).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
+    model = DiggerModel(model_name=model_name, freeze_backbone=backbone_freeze).to(device)
+    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.Adam(trainable_params, lr=lr, eps=1e-8)
     criterion = nn.CrossEntropyLoss()
     model.train()
-    for _ in range(epochs):
+    for i in range(epochs):
+        loss_record=0
         for board, empty_mask, label in loader:
             board = board.to(device)
             empty_mask = empty_mask.to(device)
@@ -96,8 +101,27 @@ def train_digger_pretrain(
             loss = criterion(logits, label)
             optimizer.zero_grad()
             loss.backward()
+            loss_record+=loss.item()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+        print(f"Epoch: {i}, loss: {loss_record}")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
     return model
+if __name__=="__main__":
+    train_x_path = 'dataset/train_img_48gap_33-001.npy'
+    train_y_path = 'dataset/train_label_48gap_33.npy'
+    # test_x_path = 'dataset/train_img_48gap_33-001.npy'
+    # test_y_path = 'dataset/train_label_48gap_33.npy'
+    test_x_path = 'dataset/test_img_48gap_33.npy'
+    test_y_path = 'dataset/test_label_48gap_33.npy'
+    # test_x_path = 'dataset/valid_img_48gap_33.npy'
+    # test_y_path = 'dataset/valid_label_48gap_33.npy'
+
+    train_x=np.load(train_x_path)
+    train_y=np.load(train_y_path)
+
+    test_x=np.load(test_x_path)
+    test_y=np.load(test_y_path)
+
+    train_digger_pretrain(train_x,train_y,epochs=50)

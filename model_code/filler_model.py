@@ -13,8 +13,10 @@ class FillerModel(nn.Module):
         feature_hidden: int = 512,
         model_name: str = "modulator",
         dropout: float = 0.1,
+        freeze_backbone: bool = False,
     ) -> None:
         super().__init__()
+        self.freeze_backbone = freeze_backbone
         self.fen_model = fen_model(
             hidden_size1=hidden_size,
             hidden_size2=hidden_size,
@@ -26,6 +28,9 @@ class FillerModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_size, 1),
         )
+        if self.freeze_backbone:
+            for parameter in self.fen_model.parameters():
+                parameter.requires_grad = False
 
     def forward(self, candidate_complete_image: torch.Tensor, empty_mask: torch.Tensor = None) -> torch.Tensor:
         features = self.fen_model(candidate_complete_image)
@@ -33,3 +38,9 @@ class FillerModel(nn.Module):
         if empty_mask is not None:
             score = score.masked_fill(empty_mask.bool().view(-1), -1e9)
         return score
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.fen_model.eval()
+        return self
