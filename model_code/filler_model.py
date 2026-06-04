@@ -26,7 +26,14 @@ class FillerModel(nn.Module):
         self.score_head = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size, 1),
+            nn.Linear(hidden_size, hidden_size*2),
+            nn.ReLU,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size*2,hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size,hidden_size//2),
+            nn.ReLU(),
+            nn.Linear(hidden_size//2,1)
         )
         if self.freeze_backbone:
             for parameter in self.fen_model.parameters():
