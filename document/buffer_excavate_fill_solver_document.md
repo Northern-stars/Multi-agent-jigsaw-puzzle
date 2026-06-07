@@ -735,6 +735,20 @@ label ∈ {0..7}
 CrossEntropy(masked_logits, label)
 ```
 
+#### 测试内容
+
+`pretrain/digger_pretrain.py` 中建议提供独立 `test_digger_pretrain(...)`，测试集上至少输出：
+
+- `cross_entropy`
+- `accuracy`
+
+含义说明：
+
+- `cross_entropy`：测试集平均交叉熵，理论区间为 `[0, +∞)`，越低越好。
+- 对于 8 分类随机猜测，`cross_entropy` 通常会接近 `ln(8) ≈ 2.08`。
+- `accuracy`：预测 slot 与真实错位 slot 一致的比例，区间为 `[0, 1]`，越高越好。
+- 当 `accuracy = 1.0` 时，说明测试样本上每次都能正确指出目标错位位置。
+
 ### 11.2 Filler 预训练候选目标
 
 Filler 的预训练目标可采用以下任一方向：
@@ -743,6 +757,29 @@ Filler 的预训练目标可采用以下任一方向：
 2. pairwise ranking：正确候选比分数更高。
 3. candidate selection：在若干候选图中选最优者。
 4. teacher distillation：拟合贪心或枚举 teacher 的偏好。
+
+当前 `pretrain/filler_pretrain.py` 采用的是最简单的 **二值评分回归**：
+
+```text
+正确 board -> target = 1.0
+错误 board -> target = 0.0
+```
+
+#### 测试内容
+
+`pretrain/filler_pretrain.py` 中建议提供独立 `test_filler_pretrain(...)`，测试集上至少输出：
+
+- `mse`
+- `mae`
+- `binary_accuracy@0.5`
+
+含义说明：
+
+- `mse`：测试集平均均方误差，理论区间为 `[0, +∞)`，越低越好。
+- 若模型输出也基本落在 `[0, 1]`，则 `mse` 常见地会落在 `[0, 1]` 附近；但由于当前 head 是实数回归，没有 sigmoid，理论上它不受上界限制。
+- `mae`：测试集平均绝对误差，理论区间为 `[0, +∞)`，越低越好；当输出值主要在 `[0, 1]` 时，通常也会落在 `[0, 1]` 附近。
+- `binary_accuracy@0.5`：将 `score >= 0.5` 视为正样本，和 `0/1` 标签比较得到的分类准确率，区间为 `[0, 1]`，越高越好。
+- 若 `mse` 很低但 `binary_accuracy@0.5` 不高，通常说明分数排序有一定区分度，但 `0.5` 阈值附近仍不稳定。
 
 ---
 

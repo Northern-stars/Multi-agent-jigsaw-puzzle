@@ -73,10 +73,53 @@ class DiggerPretrainDataset(Dataset):
         return board, empty_mask, label
 
 
+def test_digger_pretrain(
+    test_x: np.ndarray,
+    test_y: np.ndarray,
+    model: DiggerModel = None,
+    model_name: str = "ef",
+    backbone_freeze: bool = False,
+    batch_size: int = 16,
+    sample_size: int = 2000,
+    save_path: str = "model/digger_pretrain.pth",
+):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dataset = DiggerPretrainDataset(test_x, test_y, sample_size=sample_size)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    if model is None:
+        model = DiggerModel(model_name=model_name, freeze_backbone=backbone_freeze).to(device)
+        model.load_state_dict(torch.load(save_path, map_location=device))
+    criterion = nn.CrossEntropyLoss()
+    model.eval()
+    loss_sum = 0.0
+    total = 0
+    correct = 0
+    with torch.no_grad():
+        for board, empty_mask, label in tqdm(loader):
+            board = board.to(device)
+            empty_mask = empty_mask.to(device)
+            label = label.to(device)
+            logits = model(board, empty_mask)
+            loss = criterion(logits, label)
+            batch_size_cur = label.size(0)
+            loss_sum += loss.item() * batch_size_cur
+            pred = torch.argmax(logits, dim=1)
+            correct += int((pred == label).sum().item())
+            total += batch_size_cur
+    mean_loss = loss_sum / max(1, total)
+    accuracy = correct / max(1, total)
+    print(f"Digger pretrain test - cross_entropy: {mean_loss:.6f}, accuracy: {accuracy:.4f}")
+    return {
+        "cross_entropy": mean_loss,
+        "accuracy": accuracy,
+        "sample_size": total,
+    }
+
+
 def train_digger_pretrain(
     train_x: np.ndarray,
     train_y: np.ndarray,
-    model_name: str = "modulator",
+    model_name: str = "ef",
     backbone_freeze: bool = False,
     epochs: int = 5,
     batch_size: int = 16,
@@ -124,4 +167,5 @@ if __name__=="__main__":
     test_x=np.load(test_x_path)
     test_y=np.load(test_y_path)
 
-    train_digger_pretrain(train_x,train_y,epochs=50)
+    model = train_digger_pretrain(train_x,train_y,epochs=50)
+    test_digger_pretrain(test_x, test_y, model=model)

@@ -72,8 +72,8 @@ def run_episode(
     max_rounds: int = MAX_ROUNDS_PER_EPISODE,
 ) -> float:
     env.reset()
-    digger.clean_memory()
-    filler.clean_memory()
+    # digger.clean_memory()
+    # filler.clean_memory()
     terminated_by_max_rounds = True
     rounds_played = 0
     for step in range(max_rounds):

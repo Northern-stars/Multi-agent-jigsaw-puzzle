@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from model_code.fen_model import fen_model
+from model_code.fen_model import fen_model,dualstem_fen_model
 
 
 class FillerModel(nn.Module):
@@ -17,11 +17,14 @@ class FillerModel(nn.Module):
     ) -> None:
         super().__init__()
         self.freeze_backbone = freeze_backbone
-        self.fen_model = fen_model(
-            hidden_size1=hidden_size,
-            hidden_size2=hidden_size,
-            feature_hidden=feature_hidden,
-            model_name=model_name,
+        # self.fen_model = fen_model(
+        #     hidden_size1=hidden_size,
+        #     hidden_size2=hidden_size,
+        #     feature_hidden=feature_hidden,
+        #     model_name=model_name,
+        # )
+        self.fen_model=dualstem_fen_model(
+            hidden_size,hidden_size,feature_hidden,model_name=model_name
         )
         self.score_head = nn.Sequential(
             nn.ReLU(),

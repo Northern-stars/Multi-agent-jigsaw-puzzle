@@ -64,10 +64,61 @@ class FillerPretrainDataset(Dataset):
         return board, reward
 
 
+def test_filler_pretrain(
+    test_x: np.ndarray,
+    test_y: np.ndarray,
+    model: FillerModel = None,
+    model_name: str = "ef",
+    backbone_freeze: bool = False,
+    batch_size: int = 16,
+    sample_size: int = 2000,
+    save_path: str = "model/filler_pretrain.pth",
+):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dataset = FillerPretrainDataset(test_x, test_y, sample_size=sample_size)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    if model is None:
+        model = FillerModel(model_name=model_name, freeze_backbone=backbone_freeze).to(device)
+        model.load_state_dict(torch.load(save_path, map_location=device))
+    mse_criterion = nn.MSELoss()
+    mae_criterion = nn.L1Loss()
+    model.eval()
+    mse_sum = 0.0
+    mae_sum = 0.0
+    total = 0
+    correct = 0
+    with torch.no_grad():
+        for board, reward in tqdm(loader):
+            board = board.to(device)
+            reward = reward.to(device).to(torch.float32)
+            score = model(board)
+            mse = mse_criterion(score, reward)
+            mae = mae_criterion(score, reward)
+            batch_size_cur = reward.size(0)
+            mse_sum += mse.item() * batch_size_cur
+            mae_sum += mae.item() * batch_size_cur
+            pred = (score >= 0.5).to(torch.float32)
+            correct += int((pred == reward).sum().item())
+            total += batch_size_cur
+    mean_mse = mse_sum / max(1, total)
+    mean_mae = mae_sum / max(1, total)
+    accuracy = correct / max(1, total)
+    print(
+        f"Filler pretrain test - mse: {mean_mse:.6f}, mae: {mean_mae:.6f}, "
+        f"binary_accuracy@0.5: {accuracy:.4f}"
+    )
+    return {
+        "mse": mean_mse,
+        "mae": mean_mae,
+        "binary_accuracy_at_0_5": accuracy,
+        "sample_size": total,
+    }
+
+
 def train_filler_pretrain(
     train_x: np.ndarray,
     train_y: np.ndarray,
-    model_name: str = "modulator",
+    model_name: str = "ef",
     backbone_freeze: bool = False,
     epochs: int = 5,
     batch_size: int = 16,
@@ -115,4 +166,5 @@ if __name__=="__main__":
     test_x=np.load(test_x_path)
     test_y=np.load(test_y_path)
 
-    train_filler_pretrain(train_x,train_y)
+    model = train_filler_pretrain(train_x,train_y)
+    test_filler_pretrain(test_x, test_y, model=model)

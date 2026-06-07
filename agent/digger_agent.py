@@ -88,6 +88,8 @@ class DiggerAgent:
             for start in range(0, len(order), self.batch_size):
                 batch_indices = order[start : start + self.batch_size]
                 batch = [self.memory[idx] for idx in batch_indices]
+                if len(batch)==1:
+                    continue
                 board_images = torch.cat([item["board_image"] for item in batch], dim=0).to(self.device)
                 empty_masks = torch.cat([item["empty_mask"] for item in batch], dim=0).to(self.device)
                 actions = torch.tensor([item["action"] for item in batch], dtype=torch.long, device=self.device)

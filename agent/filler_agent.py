@@ -105,6 +105,8 @@ class FillerAgent:
         for _ in range(train_epochs):
             for start in range(0, len(order), self.batch_size):
                 batch_indices = order[start : start + self.batch_size]
+                if len(batch_indices)==1:
+                    continue
                 image_chunks = []
                 targets = []
                 for idx in batch_indices:
