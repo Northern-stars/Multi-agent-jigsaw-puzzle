@@ -10,7 +10,7 @@ import sys
 sys.path.append(".")
 
 from model_code.digger_model import DiggerModel
-
+from tqdm import tqdm
 
 class DiggerPretrainDataset(Dataset):
     def __init__(self, train_x: np.ndarray, train_y: np.ndarray, sample_size: int = 5000) -> None:
@@ -93,7 +93,7 @@ def train_digger_pretrain(
     model.train()
     for i in range(epochs):
         loss_record=0
-        for board, empty_mask, label in loader:
+        for board, empty_mask, label in tqdm(loader):
             board = board.to(device)
             empty_mask = empty_mask.to(device)
             label = label.to(device)

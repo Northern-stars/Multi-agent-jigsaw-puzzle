@@ -27,7 +27,7 @@ class FillerModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size*2),
-            nn.ReLU,
+            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size*2,hidden_size),
             nn.ReLU(),

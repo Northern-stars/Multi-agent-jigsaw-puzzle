@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 import sys
 sys.path.append(".")
 from model_code.filler_model import FillerModel
+from tqdm import tqdm
 
 
 class FillerPretrainDataset(Dataset):
@@ -83,7 +84,7 @@ def train_filler_pretrain(
     model.train()
     for i in range(epochs):
         loss_record=0
-        for board, reward in loader:
+        for board, reward in tqdm(loader):
             board = board.to(device)
             reward = reward.to(device).to(torch.float32)
             score = model(board)
