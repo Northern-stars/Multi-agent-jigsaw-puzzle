@@ -253,9 +253,9 @@ if __name__ == "__main__":
 
     
     buffer_switcher_model=Buffer_switcher_model(
-        hidden_size1=2048,
-        hidden_size2=1024,
-        hidden_size3=1024,
+        hidden_size1=512,
+        hidden_size2=512,
+        hidden_size3=512,
         action_num=1
     ).to(DEVICE)
     # buffer_switcher_model.load_state_dict(torch.load("model/outsider_switcher_pretrain.pth"))
@@ -269,10 +269,10 @@ if __name__ == "__main__":
         env=environment
     )
 
-    local_switcher_model=Local_switcher_model(fen_model_hidden1=2048,
-                                              fen_model_hidden2=1024,
-                                              hidden1=2048,
-                                              hidden2=1024,
+    local_switcher_model=Local_switcher_model(fen_model_hidden1=512,
+                                              fen_model_hidden2=512,
+                                              hidden1=512,
+                                              hidden2=512,
                                               action_num=1).to(DEVICE)
     local_switcher_model.load_state_dict(torch.load("model/sd2rl_pretrain.pth"))
     local_switcher=Local_switcher(

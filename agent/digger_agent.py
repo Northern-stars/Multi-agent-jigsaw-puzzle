@@ -19,8 +19,8 @@ class DiggerAgent:
         batch_size: int = 16,
         memory_size: int = 2000,
         lr: float = 1e-4,
-        epsilon: float = 0.2,
-        epsilon_min: float = 0.05,
+        epsilon: float = 0.3,
+        epsilon_min: float = 0.1,
         epsilon_gamma: float = 0.998,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> None:

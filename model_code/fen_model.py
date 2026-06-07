@@ -69,6 +69,70 @@ class fen_model(nn.Module):
 
         return x
 
+
+class small_global_vit(nn.Module):
+    def __init__(self, d_model: int, num_layers: int = 2, num_heads: int = 4, dropout: float = 0.1) -> None:
+        super().__init__()
+        self.patch_embed = nn.Conv2d(3, d_model, kernel_size=96, stride=96)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_model * 2,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        self.position_embedding = nn.Parameter(torch.randn(1, 10, d_model) * 0.02)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, board_images: torch.Tensor) -> torch.Tensor:
+        batch_size = board_images.size(0)
+        normalized = board_images.float() / 255.0
+        patch_tokens = self.patch_embed(normalized).flatten(2).transpose(1, 2)
+        cls_token = self.cls_token.expand(batch_size, -1, -1)
+        tokens = torch.cat([cls_token, patch_tokens], dim=1)
+        encoded = self.transformer(tokens + self.position_embedding)
+        return self.norm(encoded[:, 0])
+
+
+class dualstem_fen_model(nn.Module):
+    def __init__(
+        self,
+        hidden_size1: int,
+        hidden_size2: int,
+        feature_hidden: int = 512,
+        model_name: str = "ef",
+        vit_num_layers: int = 2,
+        vit_num_heads: int = 4,
+        vit_dropout: float = 0.1,
+        alpha_init: float = 1.0,
+        beta_init: float = 1.0,
+    ) -> None:
+        super().__init__()
+        if model_name.startswith("dualstem_"):
+            raise ValueError("dualstem_fen_model local model_name should be a base backbone such as 'ef' or 'modulator'.")
+        self.local_fen = fen_model(
+            hidden_size1=hidden_size1,
+            hidden_size2=hidden_size2,
+            feature_hidden=feature_hidden,
+            model_name=model_name,
+        )
+        self.global_fen = small_global_vit(
+            d_model=hidden_size2,
+            num_layers=vit_num_layers,
+            num_heads=vit_num_heads,
+            dropout=vit_dropout,
+        )
+        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
+        self.beta = nn.Parameter(torch.tensor(beta_init, dtype=torch.float32))
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        local_feature = self.local_fen(image)
+        global_feature = self.global_fen(image)
+        return self.alpha * local_feature + self.beta * global_feature
+
 class central_fen_model(nn.Module):
     def __init__(self, hidden_size1,hidden_size2,dropout=0.1):
         super().__init__()

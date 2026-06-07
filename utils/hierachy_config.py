@@ -1,0 +1,47 @@
+import os
+
+import torch
+
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DONE_REWARD = 1000
+GAMMA = 0.995
+CLIP_GRAD_NORM = 0.1
+TRAIN_PER_STEP = 25
+ACTOR_LR = 1e-4
+ACTOR_LR_MIN = 1e-6
+CRITIC_LR = 1e-3
+CRITIC_LR_MIN = 1e-5
+ENCODER_LR = 1e-4
+ACTOR_SCHEDULAR_STEP = 200
+CRITIC_SCHEDULAR_STEP = 100
+ENCODER_SCHEDULAR_STEP = 100
+BASIC_BIAS = 1e-8
+SHOW_IMAGE = True
+
+PAIR_WISE_REWARD = 0.2
+CATE_REWARD = 0.8
+CONSISTENCY_REWARD_WEIGHT = 0.5
+CONSISTENCY_REWARD = 200
+PANELTY = -0.5
+ENTROPY_WEIGHT = 0.01
+ENTROPY_GAMMA = 0.998
+ENTROPY_MIN = 0.005
+
+EPOCH_NUM = 2000
+LOAD_MODEL = False
+SWAP_NUM = [2, 3, 4, 8]
+MAX_STEP = [200, 200, 200, 200]
+MODEL_NAME = "(1).pth"
+MODEL_PATH = os.path.join("model", "DQN" + MODEL_NAME)
+
+BATCH_SIZE = 5
+EPSILON = 0.5
+EPSILON_GAMMA = 0.995
+EPSILON_MIN = 0.1
+AGENT_EPOCHS = 5
+
+TRAIN_X_PATH = "dataset/train_img_48gap_33-001.npy"
+TRAIN_Y_PATH = "dataset/train_label_48gap_33.npy"
+TEST_X_PATH = "dataset/test_img_48gap_33.npy"
+TEST_Y_PATH = "dataset/test_label_48gap_33.npy"
