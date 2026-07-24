@@ -1,5 +1,6 @@
+import copy
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -42,13 +43,21 @@ class DualBoardMAPPOAgent:
         model: nn.Module,
         env,
         config: MAPPOConfig,
+        model_agent2: Optional[nn.Module] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> None:
-        self.model = model.to(device)
+        self.models = nn.ModuleList([model.to(device), (model_agent2 or copy.deepcopy(model)).to(device)])
+        self.model = self.models[0]
+        self.model_agent1 = self.models[0]
+        self.model_agent2 = self.models[1]
         self.env = env
         self.config = config
         self.device = device
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.learning_rate, eps=1e-8)
+        self.optimizers = [
+            torch.optim.Adam(self.models[0].parameters(), lr=config.learning_rate, eps=1e-8),
+            torch.optim.Adam(self.models[1].parameters(), lr=config.learning_rate, eps=1e-8),
+        ]
+        self.optimizer = self.optimizers[0]
         self.buffer = EpisodeBuffer()
 
     def _stack_obs(self, observations: Sequence[Dict[str, torch.Tensor]]) -> torch.Tensor:
@@ -56,37 +65,55 @@ class DualBoardMAPPOAgent:
 
     def _sample_policy(
         self,
-        output: Dict[str, torch.Tensor],
+        board_images: torch.Tensor,
         deterministic: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        ptr1_logits = output["ptr1_logits"]
-        ptr1_dist = Categorical(logits=ptr1_logits)
+        outputs = [model.evaluate_policy(board_images) for model in self.models]
+        ptr1_actions = []
+        ptr1_log_probs = []
+        ptr1_entropies = []
 
-        if deterministic:
-            ptr1_actions = ptr1_logits.argmax(dim=-1)
-        else:
-            # ptr1_actions = Categorical(self._build_mixed_policy(ptr1_logits, self.config.epsilon_greedy)).sample()
-            ptr1_actions = ptr1_dist.sample()
-        full_output = self.model.evaluate_policy(
-            board_images=None,
-            ptr1_actions=ptr1_actions,
-            encoded=output["encoded"],
-        )
-        ptr2_logits = full_output["ptr2_logits"]
-        ptr2_dist = Categorical(logits=ptr2_logits)
+        for agent_index, output in enumerate(outputs):
+            logits = output["ptr1_logits"][:, agent_index]
+            dist = Categorical(logits=logits)
+            if deterministic:
+                action = logits.argmax(dim=-1)
+            else:
+                action = dist.sample()
+            ptr1_actions.append(action)
+            ptr1_log_probs.append(dist.log_prob(action))
+            ptr1_entropies.append(dist.entropy())
 
-        if deterministic:
-            ptr2_actions = ptr2_logits.argmax(dim=-1)
-        else:
-            # ptr2_actions = Categorical(self._build_mixed_policy(ptr2_logits, self.config.epsilon_greedy)).sample()
-            ptr2_actions = ptr2_dist.sample()
+        ptr1_actions_t = torch.stack(ptr1_actions, dim=1)
+        ptr2_actions = []
+        ptr2_log_probs = []
+        ptr2_entropies = []
+        outside_probs = []
+
+        for agent_index, (model, output) in enumerate(zip(self.models, outputs)):
+            full_output = model.evaluate_policy(
+                board_images=None,
+                ptr1_actions=ptr1_actions_t,
+                encoded=output["encoded"],
+            )
+            logits = full_output["ptr2_logits"][:, agent_index]
+            dist = Categorical(logits=logits)
+            if deterministic:
+                action = logits.argmax(dim=-1)
+            else:
+                action = dist.sample()
+            ptr2_actions.append(action)
+            ptr2_log_probs.append(dist.log_prob(action))
+            ptr2_entropies.append(dist.entropy())
+            outside_probs.append(full_output["outside_prob"][:, agent_index])
+
         return {
-            "ptr1_actions": ptr1_actions,
-            "ptr2_actions": ptr2_actions,
-            "log_prob": ptr1_dist.log_prob(ptr1_actions) + ptr2_dist.log_prob(ptr2_actions),
-            "entropy": ptr1_dist.entropy() + ptr2_dist.entropy(),
-            "value": output["value"],
-            "outside_prob": full_output["outside_prob"],
+            "ptr1_actions": ptr1_actions_t,
+            "ptr2_actions": torch.stack(ptr2_actions, dim=1),
+            "log_prob": torch.stack(ptr1_log_probs, dim=1) + torch.stack(ptr2_log_probs, dim=1),
+            "entropy": torch.stack(ptr1_entropies, dim=1) + torch.stack(ptr2_entropies, dim=1),
+            "value": torch.stack([output["value"] for output in outputs], dim=1),
+            "outside_prob": torch.stack(outside_probs, dim=1),
         }
 
     def select_actions(
@@ -94,11 +121,11 @@ class DualBoardMAPPOAgent:
         observations: Sequence[Dict[str, torch.Tensor]],
         deterministic: bool = False,
     ) -> Tuple[List[Tuple[int, int]], Dict[str, torch.Tensor]]:
-        self.model.eval()
+        for model in self.models:
+            model.eval()
         board_images = self._stack_obs(observations)
         with torch.no_grad():
-            output = self.model.evaluate_policy(board_images)
-            policy_sample = self._sample_policy(output, deterministic=deterministic)
+            policy_sample = self._sample_policy(board_images, deterministic=deterministic)
 
         ptr1 = policy_sample["ptr1_actions"].squeeze(0).cpu()
         ptr2 = policy_sample["ptr2_actions"].squeeze(0).cpu()
@@ -131,16 +158,17 @@ class DualBoardMAPPOAgent:
         self.buffer.rewards.append(torch.tensor(reward, dtype=torch.float32))
         self.buffer.dones.append(torch.tensor(float(done), dtype=torch.float32))
 
-    def _compute_bootstrap_value(self, observations: Sequence[Dict[str, torch.Tensor]], done: bool) -> float:
+    def _compute_bootstrap_value(self, observations: Sequence[Dict[str, torch.Tensor]], done: bool) -> torch.Tensor:
         if done:
-            return 0.0
-        self.model.eval()
+            return torch.zeros(2, dtype=torch.float32)
+        for model in self.models:
+            model.eval()
         board_images = self._stack_obs(observations)
         with torch.no_grad():
-            value = self.model.evaluate_policy(board_images)["value"]
-        return float(value.squeeze(0).item())
+            values = [model.evaluate_policy(board_images)["value"].squeeze(0).detach().cpu() for model in self.models]
+        return torch.stack(values).to(torch.float32)
 
-    def _compute_advantages(self, last_value: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _compute_advantages(self, last_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         rewards = torch.stack(self.buffer.rewards)
         dones = torch.stack(self.buffer.dones)
         values = torch.stack(self.buffer.values)
@@ -149,42 +177,41 @@ class DualBoardMAPPOAgent:
         intent_bonus = self.config.intent_align_coef * (1.0 - torch.abs(outside_probs[:, 0] - outside_probs[:, 1]))
         rewards = rewards + intent_bonus
 
-        returns = torch.zeros_like(rewards)
-        advantages = torch.zeros_like(rewards)
-        gae = torch.tensor(0.0)
-        next_value = torch.tensor(last_value, dtype=torch.float32)
+        rewards = rewards.unsqueeze(-1).expand_as(values)
+        returns = torch.zeros_like(values)
+        advantages = torch.zeros_like(values)
+        gae = torch.zeros(2, dtype=torch.float32)
+        next_value = last_value.to(torch.float32)
 
         for step in reversed(range(len(rewards))):
-            mask = 1.0 - dones[step]
+            mask = 1.0 - dones[step].view(1)
             delta = rewards[step] + self.config.gamma * next_value * mask - values[step]
             gae = delta + self.config.gamma * self.config.gae_lambda * mask * gae
             advantages[step] = gae
             returns[step] = advantages[step] + values[step]
             next_value = values[step]
-        std=advantages.std(unbiased=False)
-        if std > 1e-8:
-
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
-        else:
-            advantages = advantages - advantages.mean()
+        std = advantages.std(dim=0, unbiased=False)
+        mean = advantages.mean(dim=0)
+        advantages = torch.where(std > 1e-8, (advantages - mean) / (std + 1e-8), advantages - mean)
         return returns, advantages
 
     def update(self, next_observations: Sequence[Dict[str, torch.Tensor]], done: bool, show: bool = False) -> Dict[str, float]:
         if not self.buffer.rewards:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
 
-        self.model.train()
+        for model in self.models:
+            model.train()
         last_value = self._compute_bootstrap_value(next_observations, done)
         returns, advantages = self._compute_advantages(last_value)
 
         board_images = torch.stack(self.buffer.board_images).to(self.device)
         actions = torch.stack(self.buffer.actions).to(self.device)
-        old_log_probs = torch.stack(self.buffer.log_probs).to(self.device).sum(dim=-1)
+        old_log_probs = torch.stack(self.buffer.log_probs).to(self.device)
         returns = returns.to(self.device)
         advantages = advantages.to(self.device)
 
         indices = np.arange(len(self.buffer.rewards))
-        loss_log: List[Tuple[float, float, float]] = []
+        loss_log: List[Tuple[int, float, float, float]] = []
 
         for _ in range(self.config.ppo_epochs):
             np.random.shuffle(indices)
@@ -197,55 +224,66 @@ class DualBoardMAPPOAgent:
                 batch_ptr1 = batch_actions[:, :, 0]
                 batch_ptr2 = batch_actions[:, :, 1]
 
-                output = self.model.evaluate_policy(
-                    batch_board,
-                    ptr1_actions=batch_ptr1,
-                )
-                ptr1_dist = Categorical(logits=output["ptr1_logits"])
-                ptr1_log_prob = ptr1_dist.log_prob(batch_ptr1)
-                ptr1_entropy = ptr1_dist.entropy()
+                for agent_index, (model, optimizer) in enumerate(zip(self.models, self.optimizers)):
+                    output = model.evaluate_policy(
+                        batch_board,
+                        ptr1_actions=batch_ptr1,
+                    )
+                    ptr1_dist = Categorical(logits=output["ptr1_logits"][:, agent_index])
+                    ptr1_log_prob = ptr1_dist.log_prob(batch_ptr1[:, agent_index])
+                    ptr1_entropy = ptr1_dist.entropy()
 
-                ptr2_logits = output["ptr2_logits"]
-                ptr2_dist = Categorical(logits=ptr2_logits)
-                ptr2_log_prob = ptr2_dist.log_prob(batch_ptr2)
-                ptr2_entropy = ptr2_dist.entropy()
+                    ptr2_dist = Categorical(logits=output["ptr2_logits"][:, agent_index])
+                    ptr2_log_prob = ptr2_dist.log_prob(batch_ptr2[:, agent_index])
+                    ptr2_entropy = ptr2_dist.entropy()
 
-                new_log_prob = (ptr1_log_prob + ptr2_log_prob).sum(dim=-1)
-                entropy = (ptr1_entropy + ptr2_entropy).mean()
-                value = output["value"]
+                    new_log_prob = ptr1_log_prob + ptr2_log_prob
+                    entropy = (ptr1_entropy + ptr2_entropy).mean()
+                    value = output["value"]
 
-                ratio = torch.exp(new_log_prob - old_log_probs[batch_indices_t])
-                unclipped = ratio * advantages[batch_indices_t]
-                clipped = torch.clamp(
-                    ratio,
-                    1.0 - self.config.clip_epsilon,
-                    1.0 + self.config.clip_epsilon,
-                ) * advantages[batch_indices_t]
+                    ratio = torch.exp(new_log_prob - old_log_probs[batch_indices_t, agent_index])
+                    agent_advantages = advantages[batch_indices_t, agent_index]
+                    unclipped = ratio * agent_advantages
+                    clipped = torch.clamp(
+                        ratio,
+                        1.0 - self.config.clip_epsilon,
+                        1.0 + self.config.clip_epsilon,
+                    ) * agent_advantages
 
-                policy_loss = -torch.min(unclipped, clipped).mean()
-                value_loss = nn.functional.mse_loss(value, returns[batch_indices_t])
-                loss = policy_loss + self.config.value_coef * value_loss - self.config.entropy_coef * entropy
+                    policy_loss = -torch.min(unclipped, clipped).mean()
+                    value_loss = nn.functional.mse_loss(value, returns[batch_indices_t, agent_index])
+                    loss = policy_loss + self.config.value_coef * value_loss - self.config.entropy_coef * entropy
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
-                self.optimizer.step()
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), self.config.max_grad_norm)
+                    optimizer.step()
 
-                loss_log.append((float(policy_loss.item()), float(value_loss.item()), float(entropy.item())))
+                    loss_log.append((agent_index, float(policy_loss.item()), float(value_loss.item()), float(entropy.item())))
 
-        mean_policy = float(np.mean([item[0] for item in loss_log])) if loss_log else 0.0
-        mean_value = float(np.mean([item[1] for item in loss_log])) if loss_log else 0.0
-        mean_entropy = float(np.mean([item[2] for item in loss_log])) if loss_log else 0.0
+        mean_policy = float(np.mean([item[1] for item in loss_log])) if loss_log else 0.0
+        mean_value = float(np.mean([item[2] for item in loss_log])) if loss_log else 0.0
+        mean_entropy = float(np.mean([item[3] for item in loss_log])) if loss_log else 0.0
+        agent_policy_losses = [
+            float(np.mean([item[1] for item in loss_log if item[0] == agent_index]))
+            if any(item[0] == agent_index for item in loss_log)
+            else 0.0
+            for agent_index in range(2)
+        ]
         self.buffer.clear()
 
         if show:
             print(
                 f"MAPPO update - policy_loss: {mean_policy:.4f}, "
-                f"value_loss: {mean_value:.4f}, entropy: {mean_entropy:.4f}"
+                f"value_loss: {mean_value:.4f}, entropy: {mean_entropy:.4f}, "
+                f"agent1_policy_loss: {agent_policy_losses[0]:.4f}, "
+                f"agent2_policy_loss: {agent_policy_losses[1]:.4f}"
             )
 
         return {
             "policy_loss": mean_policy,
             "value_loss": mean_value,
             "entropy": mean_entropy,
+            "agent1_policy_loss": agent_policy_losses[0],
+            "agent2_policy_loss": agent_policy_losses[1],
         }

@@ -54,8 +54,10 @@ def save_checkpoint(agent: DualBoardMAPPOAgent) -> None:
     os.makedirs("model", exist_ok=True)
     torch.save(
         {
-            "model": agent.model.state_dict(),
-            "optimizer": agent.optimizer.state_dict(),
+            "model_agent1": agent.model_agent1.state_dict(),
+            "model_agent2": agent.model_agent2.state_dict(),
+            "optimizer_agent1": agent.optimizers[0].state_dict(),
+            "optimizer_agent2": agent.optimizers[1].state_dict(),
         },
         MODEL_PATH,
     )
@@ -63,8 +65,18 @@ def save_checkpoint(agent: DualBoardMAPPOAgent) -> None:
 
 def load_checkpoint(agent: DualBoardMAPPOAgent) -> None:
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
-    agent.model.load_state_dict(checkpoint["model"])
-    agent.optimizer.load_state_dict(checkpoint["optimizer"])
+    if "model_agent1" in checkpoint and "model_agent2" in checkpoint:
+        agent.model_agent1.load_state_dict(checkpoint["model_agent1"])
+        agent.model_agent2.load_state_dict(checkpoint["model_agent2"])
+        if "optimizer_agent1" in checkpoint:
+            agent.optimizers[0].load_state_dict(checkpoint["optimizer_agent1"])
+        if "optimizer_agent2" in checkpoint:
+            agent.optimizers[1].load_state_dict(checkpoint["optimizer_agent2"])
+    else:
+        agent.model_agent1.load_state_dict(checkpoint["model"])
+        agent.model_agent2.load_state_dict(checkpoint["model"])
+        if "optimizer" in checkpoint:
+            agent.optimizers[0].load_state_dict(checkpoint["optimizer"])
 
 
 def run_training(env: DualBoardEnv, agent: DualBoardMAPPOAgent, epoch: int = TOTAL_EPISODES, load: bool = False,reward_difference=False) -> None:
@@ -151,7 +163,8 @@ if __name__ == "__main__":
         reward_weights=reward_weight
     )
 
-    model = DualBoardMAPPOModel(embed_dim=128, num_layers=3, num_heads=4, dropout=0.1).to(DEVICE)
+    model_agent1 = DualBoardMAPPOModel(embed_dim=128, num_layers=3, num_heads=4, dropout=0.1).to(DEVICE)
+    model_agent2 = DualBoardMAPPOModel(embed_dim=128, num_layers=3, num_heads=4, dropout=0.1).to(DEVICE)
     config = MAPPOConfig(
         gamma=0.99,
         gae_lambda=0.95,
@@ -164,6 +177,6 @@ if __name__ == "__main__":
         learning_rate=1e-4,
         intent_align_coef=0.1,
     )
-    agent = DualBoardMAPPOAgent(model=model, env=env, config=config, device=DEVICE)
+    agent = DualBoardMAPPOAgent(model=model_agent1, model_agent2=model_agent2, env=env, config=config, device=DEVICE)
 
     run_training(env, agent, epoch=TOTAL_EPISODES, load=LOAD_MODEL, reward_difference=REWARD_DIFFERENCE)
